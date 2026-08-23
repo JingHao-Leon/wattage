@@ -44,3 +44,6 @@ site/
 
 # Internal build spec / planning doc — kept locally, not part of the public repo
 /WATTAGE_BUILD_DOC.md
+
+# Personal session-handoff notes — kept locally, never part of the public repo
+/LAUNCH_SESSION_CONTEXT.md
