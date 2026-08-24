@@ -38,7 +38,9 @@ def _write_unpriced_trace(path: Path) -> None:
                                             },
                                             {
                                                 "key": "gen_ai.request.model",
-                                                "value": {"stringValue": "gpt-4o"},
+                                                "value": {
+                                                    "stringValue": "gpt-experimental-unreleased"
+                                                },
                                             },
                                             {
                                                 "key": "gen_ai.usage.input_tokens",
@@ -240,7 +242,7 @@ def test_score_command_shows_unpriced_not_a_fake_grade(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert "unpriced" in result.stdout
-    assert "openai/gpt-4o" in result.stdout
+    assert "openai/gpt-experimental-unreleased" in result.stdout
     assert "A (100)" not in result.stdout
 
 
@@ -252,7 +254,7 @@ def test_report_command_shows_unpriced_warning_prominently(tmp_path: Path) -> No
 
     assert result.exit_code == 0
     assert "unpriced" in result.stdout
-    assert "openai/gpt-4o" in result.stdout
+    assert "openai/gpt-experimental-unreleased" in result.stdout
     assert "incomplete" in result.stdout
     assert "not a" in result.stdout and "confirmed-efficient" in result.stdout
 

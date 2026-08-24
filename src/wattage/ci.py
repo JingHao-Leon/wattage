@@ -28,8 +28,8 @@ from wattage.baseline import (
 )
 from wattage.config import CIFailOnConfig, WattageConfig
 from wattage.models import Report, Severity
-from wattage.pricing.registry import PricingConfigError
-from wattage.report import build_trace_and_report
+from wattage.pricing.registry import PricingConfigError, PricingRegistry
+from wattage.report import build_trace_and_report, load_quality_map
 from wattage.scoring.quality import QualityMapError
 
 EXIT_PASS = 0
@@ -49,6 +49,10 @@ class CIResult:
     report: Report | None = None
     baseline: Baseline | None = None
     reasons: list[str] = field(default_factory=list)
+    # Non-failure context for the verdict UI: baseline initialization,
+    # what the run was compared against, pricing-version annotations.
+    notes: list[str] = field(default_factory=list)
+    baseline_created: bool = False
 
 
 _FAIL_ON_KEYS = frozenset({"score_below", "cost_delta_pct_above", "any_critical"})
@@ -97,17 +101,41 @@ def parse_fail_on(spec: str) -> CIFailOnConfig:
     )
 
 
-def evaluate_fail_on(report: Report, baseline: Baseline, fail_on: CIFailOnConfig) -> list[str]:
+def evaluate_fail_on(
+    report: Report,
+    baseline: Baseline,
+    fail_on: CIFailOnConfig,
+    notes: list[str] | None = None,
+) -> list[str]:
     reasons = []
     if fail_on.score_below is not None and report.score.efficiency < fail_on.score_below:
         reasons.append(f"score {report.score.efficiency} is below threshold {fail_on.score_below}")
     if fail_on.cost_delta_pct_above is not None:
-        delta = cost_delta_pct(report, baseline)
-        if delta is not None and delta > fail_on.cost_delta_pct_above:
-            reasons.append(
-                f"cost increased {delta:.1f}% vs baseline, above threshold "
-                f"{fail_on.cost_delta_pct_above}%"
-            )
+        last = baseline.last_passing
+        if (
+            last is not None
+            and last.pricing_version
+            and last.pricing_version != report.pricing_version
+        ):
+            # The baseline was priced under a different snapshot — a rate
+            # change is indistinguishable from a real regression in raw
+            # dollars, so the delta gate is skipped (announced, not silent)
+            # and the baseline refreshes under the new snapshot on this run.
+            if notes is not None:
+                notes.append(
+                    f"pricing snapshot changed ({last.pricing_version} → "
+                    f"{report.pricing_version}); cost-delta gate skipped — raw dollars "
+                    "across snapshots mix a rate change with a real usage change. The "
+                    "gate resumes once a PASSING run records a baseline under the new "
+                    "snapshot; until then, review cost changes by hand."
+                )
+        else:
+            delta = cost_delta_pct(report, baseline)
+            if delta is not None and delta > fail_on.cost_delta_pct_above:
+                reasons.append(
+                    f"cost increased {delta:.1f}% vs baseline, above threshold "
+                    f"{fail_on.cost_delta_pct_above}%"
+                )
     if fail_on.any_critical and any(f.severity == Severity.critical for f in report.findings):
         reasons.append("at least one critical-severity finding")
     return reasons
@@ -126,12 +154,32 @@ def run_ci(
     fail_on = fail_on or config.ci.fail_on
     resolved_baseline_path = baseline_path or config.ci.baseline_path
 
+    # Config inputs are loaded BEFORE the trace: a missing or malformed
+    # --quality/--pricing file is a config/usage problem (exit 2), and
+    # loading them inside trace ingestion used to misreport it as exit 3
+    # ("unparseable trace") — sending users to debug the wrong artifact.
+    try:
+        quality_map = load_quality_map(quality_file)
+    except (OSError, json.JSONDecodeError, ValueError, QualityMapError) as exc:
+        return CIResult(
+            exit_code=EXIT_CONFIG_ERROR,
+            reasons=[f"could not read --quality file {quality_file!r}: {exc}"],
+        )
+    try:
+        registry = PricingRegistry.load(overrides_path=pricing_override)
+    except (OSError, yaml.YAMLError, PricingConfigError, TypeError) as exc:
+        detail = f" override {pricing_override!r}" if pricing_override else ""
+        return CIResult(
+            exit_code=EXIT_CONFIG_ERROR,
+            reasons=[f"could not load pricing{detail}: {exc}"],
+        )
+
     try:
         trace, report = build_trace_and_report(
             source,
-            pricing_override=pricing_override,
             config=config,
-            quality_file=quality_file,
+            registry=registry,
+            quality_map=quality_map,
         )
     except (OSError, json.JSONDecodeError, AdapterError) as exc:
         # AdapterError also covers a structurally-valid but empty trace
@@ -141,9 +189,9 @@ def run_ci(
         # drift apart.
         return CIResult(exit_code=EXIT_INGESTION_ERROR, reasons=[str(exc)])
     except (yaml.YAMLError, PricingConfigError, QualityMapError) as exc:
-        # A malformed --pricing override or --quality map is a config/
-        # usage problem, not a trace-ingestion one -- same exit code as a
-        # bad --config file, not exit 3.
+        # A malformed quality-map shape or bad vendored pricing entry is a
+        # config/usage problem, not a trace-ingestion one -- same exit code
+        # as a bad --config file, not exit 3.
         return CIResult(exit_code=EXIT_CONFIG_ERROR, reasons=[str(exc)])
 
     if report.unpriced_calls > 0:
@@ -157,6 +205,7 @@ def run_ci(
             ],
         )
 
+    notes: list[str] = []
     try:
         # The baseline as it stood *before* this run — what this run was
         # actually compared against, and what render_pr_comment/render's
@@ -165,7 +214,8 @@ def run_ci(
         # last_passing) show the run diffed against itself: always "no
         # change".
         baseline_before = load_baseline(resolved_baseline_path)
-        reasons = evaluate_fail_on(report, baseline_before, fail_on)
+        baseline_created = baseline_before.last_passing is None
+        reasons = evaluate_fail_on(report, baseline_before, fail_on, notes=notes)
         passed = not reasons
         exit_code = EXIT_PASS if passed else EXIT_FAIL
 
@@ -174,16 +224,25 @@ def run_ci(
                 baseline_before, report, passed=passed, window_days=config.ci.rolling_window_days
             )
             save_baseline(resolved_baseline_path, updated)
-    except (OSError, ValidationError, ValueError) as exc:
+    except (OSError, ValidationError, ValueError, TypeError) as exc:
         # baseline.json is a plain committed file a user (or a bad merge)
         # can hand-corrupt -- a config-level problem, not a real cost
         # regression. Letting this fall through uncaught would land on
         # Python's default exit code 1, indistinguishable from exit 1's
         # real documented meaning ("a fail-on threshold breached"): a
         # corrupt baseline would masquerade as a genuine regression.
+        # TypeError included: a hand-edited naive timestamp used to escape
+        # as an uncaught aware-vs-naive comparison crash.
         return CIResult(
             exit_code=EXIT_CONFIG_ERROR,
             reasons=[f"could not read/update baseline {resolved_baseline_path!r}: {exc}"],
         )
 
-    return CIResult(exit_code=exit_code, report=report, baseline=baseline_before, reasons=reasons)
+    return CIResult(
+        exit_code=exit_code,
+        report=report,
+        baseline=baseline_before,
+        reasons=reasons,
+        notes=notes,
+        baseline_created=baseline_created,
+    )

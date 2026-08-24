@@ -152,3 +152,102 @@ def test_orphan_calls_outside_any_agent_span_get_a_catch_all_task() -> None:
     assert len(tasks) == 2
     all_llm_span_ids = {c.span_id for t in tasks for c in t.llm_calls}
     assert all_llm_span_ids == {"agent-chat", "orphan-chat"}
+
+
+def test_duplicate_span_id_is_collapsed_counted_and_billed_once() -> None:
+    """OTLP delivery is at-least-once: a re-exported trace can contain the
+    same span twice, and counting it twice double-bills every one of its
+    dollars. The first occurrence must win, and the collapse must be
+    counted on the Trace (never silent) so the report can surface it."""
+    spans = [_chat("dup-1", None, "trace-A", 0), _chat("dup-1", None, "trace-A", 50)]
+    trace = sessionize(spans, source="synthetic")
+
+    assert trace.duplicate_spans == 1
+    calls = [c for s in trace.sessions for t in s.tasks for c in t.llm_calls]
+    assert len(calls) == 1
+    assert sum(c.usage.input for c in calls) == 100  # one call's tokens, not two
+
+
+def test_unclassifiable_span_carrying_usage_is_counted_as_dropped() -> None:
+    """A span carrying gen_ai.usage.* tokens that can't be classified as any
+    call kind would silently vanish from every total -- the exact undercount
+    this project exists to prevent. It must be counted on
+    Trace.dropped_token_spans so the report can say the bill is incomplete."""
+    mystery = RawSpan(
+        span_id="mystery-1",
+        parent_span_id=None,
+        trace_id="trace-A",
+        name="some.custom.span",
+        kind=SpanKind.other,
+        attributes={"gen_ai.usage.input_tokens": 5000},
+        start_ns=0,
+        end_ns=1,
+    )
+    trace = sessionize([_chat("c1", None, "trace-A", 0), mystery], source="synthetic")
+
+    assert trace.dropped_token_spans == 1
+    calls = [c for s in trace.sessions for t in s.tasks for c in t.llm_calls]
+    assert {c.span_id for c in calls} == {"c1"}  # the mystery span billed nothing
+
+
+def test_session_id_attribute_stitches_multiple_traces_into_one_session() -> None:
+    """Production agents emit one OTel trace per user turn; the session.id
+    attribute is what stitches a multi-turn conversation back into a single
+    session so cross-turn analysis doesn't shatter. Without it, distinct
+    trace_ids must stay distinct sessions."""
+
+    def _turn(span_id: str, trace_id: str, session_attr: bool) -> RawSpan:
+        span = _chat(span_id, None, trace_id, 0)
+        if session_attr:
+            span.attributes["session.id"] = "conv-1"
+        return span
+
+    stitched = sessionize(
+        [_turn("c1", "trace-1", True), _turn("c2", "trace-2", True)], source="synthetic"
+    )
+    assert len(stitched.sessions) == 1
+    assert stitched.sessions[0].session_id == "conv-1"
+    calls = [c for t in stitched.sessions[0].tasks for c in t.llm_calls]
+    assert {c.span_id for c in calls} == {"c1", "c2"}
+
+    unstitched = sessionize(
+        [_turn("c1", "trace-1", False), _turn("c2", "trace-2", False)], source="synthetic"
+    )
+    assert {s.session_id for s in unstitched.sessions} == {"trace-1", "trace-2"}
+
+
+def test_one_malformed_span_is_quarantined_not_fatal() -> None:
+    """One bad span (an impossible usage shape) in an otherwise-valid trace
+    must not abort the whole analysis: the span is skipped, recorded on
+    Trace.skipped_spans, and everything valid still gets priced."""
+    good = RawSpan(
+        span_id="ok",
+        trace_id="t1",
+        name="chat m",
+        kind=SpanKind.chat,
+        attributes={
+            "gen_ai.provider.name": "anthropic",
+            "gen_ai.request.model": "claude-sonnet-4-6",
+            "gen_ai.usage.input_tokens": 100,
+            "gen_ai.usage.output_tokens": 10,
+        },
+        start_ns=1,
+    )
+    bad = RawSpan(
+        span_id="bad",
+        trace_id="t1",
+        name="chat m",
+        kind=SpanKind.chat,
+        attributes={
+            "gen_ai.provider.name": "anthropic",
+            "gen_ai.request.model": "claude-sonnet-4-6",
+            "gen_ai.usage.input_tokens": -5,  # impossible; must quarantine
+            "gen_ai.usage.output_tokens": 10,
+        },
+        start_ns=2,
+    )
+    trace = sessionize([good, bad], source="s")
+    assert len(trace.skipped_spans) == 1
+    assert "bad" in trace.skipped_spans[0]
+    calls = trace.sessions[0].tasks[0].llm_calls
+    assert [c.span_id for c in calls] == ["ok"]

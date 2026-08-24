@@ -41,12 +41,14 @@ Each detector has its own `enabled: bool` (default `true`) plus whatever thresho
 | `cache_gap` | *(no tunable thresholds)* |
 | `verbosity` | `expected_output_ceiling: 1000`, `high_severity_multiplier: 3.0` |
 | `redundant_tool_calls` | `window: 5`, `fuzzy: true`, `exempt_tools: [poll_status, wait, healthcheck]` |
-| `nonconvergence` | `min_iterations: 3`, `theta_prog: 0.25`, `consecutive_k: 3`, `oscillation_threshold: 0.6`, `stall_evidence_threshold: 0.15`, `stall_state_threshold: 0.15`, `stall_growth_threshold: 0.5`, `osc_window: 6`, `max_period: 4`, `weights: {E: 0.40, S: 0.20, P: 0.20, O: 0.15, G: 0.05}`, `exempt_tools`, `embed: local`, `judge: off` |
+| `nonconvergence` | `min_iterations: 3`, `theta_prog: 0.25`, `consecutive_k: 3`, `oscillation_threshold: 0.6`, `stall_evidence_threshold: 0.15`, `stall_state_threshold: 0.15`, `stall_growth_threshold: 0.5`, `osc_window: 6`, `max_period: 4`, `critical_ratio: 0.5`, `weights: {E: 0.40, S: 0.20, P: 0.20, O: 0.15, G: 0.05}`, `exempt_tools`, `embed: local`, `judge: off` |
 | `retrieval_thrash` | `relevance_threshold: 0.35`, `max_iterations_soft: 4` |
 | `model_mismatch` | `downgrade_candidates: {anthropic: claude-haiku-4-5, openai: gpt-5.6-luna}`, `simple_output_ceiling: 150`, `require_quality_map: true`, `min_downgrade_pass_rate: 0.90` |
 | `reasoning_overspend` | `expected_reasoning_ceiling: 500`, `simple_output_ceiling: 150` |
+| `retry_storm` | `shape_tolerance: 0.02`, `min_repeats: 3` |
+| `tool_result_bloat` | `result_char_ceiling: 20000`, `high_severity_multiplier: 4.0` |
 
-See [The Convergence Engine](convergence.md) for what `nonconvergence`'s E/S/P/O/G weights and thresholds actually mean.
+See [The Convergence Engine](convergence.md) for what `nonconvergence`'s E/S/P/O/G weights and thresholds actually mean. `critical_ratio` is the share of a loop's own billed dollars burned after its last productive iteration at which a non-convergence finding escalates to critical severity (the `fail_on.any_critical` hard stop). `judge` must stay `"off"`: the sampled LLM-judge tier exists in the codebase but is not wired into the pipeline yet, and setting it to anything else is a hard config error rather than a silent no-op.
 
 ### `quality`
 
@@ -63,6 +65,6 @@ See [The Convergence Engine](convergence.md) for what `nonconvergence`'s E/S/P/O
 | `fail_on.score_below` | `80` | Fail if the Token Efficiency score drops below this. |
 | `fail_on.cost_delta_pct_above` | `5.0` | Fail if total cost increased more than this percent vs. the baseline's last passing run. |
 | `fail_on.any_critical` | `true` | Fail on any single critical-severity finding, regardless of the aggregate score. |
-| `badge_out` / `sarif_out` / `pr_comment_out` | `null` | Default output paths, if you don't want to pass `--badge-out`/`--sarif-out`/`--pr-comment-out` on every invocation. |
+| `badge_out` / `sarif_out` / `pr_comment_out` / `junit_out` | `null` | Default output paths, if you don't want to pass `--badge-out`/`--sarif-out`/`--pr-comment-out`/`--junit-out` on every invocation. |
 
 Any of these can also be overridden per-invocation with the matching CLI flag (e.g. `--fail-on "score_below:75"`) — an explicit flag always wins over both the config file and the built-in default.

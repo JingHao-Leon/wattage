@@ -1,0 +1,104 @@
+name: "Wattage Cost Regression Gate"
+description: "Cost-regression gate for AI agents: profiles token spend and fails a PR when a change makes your agents more expensive."
+author: "wattage"
+branding:
+  icon: "zap"
+  color: "yellow"
+
+inputs:
+  source:
+    description: "Path to the OTLP JSON trace file to analyze."
+    required: true
+  baseline:
+    description: "Path to the committed baseline JSON."
+    required: false
+    default: ".wattage/baseline.json"
+  pricing:
+    description: "Path to a pricing.yaml override."
+    required: false
+  quality:
+    description: "Path to a quality.json map (enables quality-gated findings)."
+    required: false
+  fail-on:
+    description: 'e.g. "score_below:80,cost_delta_pct_above:5,any_critical:true"'
+    required: false
+  config:
+    description: "Path to a wattage.yaml config file (maps to --config)."
+    required: false
+  pr-comment:
+    description: 'Post the results as a PR comment when running on a pull_request event ("true"/"false").'
+    required: false
+    default: "true"
+  sarif-out:
+    description: "Path to write SARIF results (upload separately with github/codeql-action/upload-sarif)."
+    required: false
+    default: "wattage.sarif"
+  junit-out:
+    description: "Path to write JUnit XML results."
+    required: false
+  badge-out:
+    description: "Path to write a Token Efficiency SVG badge (e.g. .github/wattage-badge.svg)."
+    required: false
+
+outputs:
+  exit-code:
+    description: >-
+      The wattage ci exit code (0 pass, 1 fail, 2 config error, 3 ingestion
+      error, 4 pricing error). To read outputs after a failing run, set
+      continue-on-error: true on this action's step.
+    value: ${{ steps.run.outputs.exit-code }}
+  score:
+    description: >-
+      Token Efficiency score (0-100) from the report. Empty when the run
+      failed before producing a report. To read outputs after a failing run,
+      set continue-on-error: true on this action's step.
+    value: ${{ steps.run.outputs.score }}
+  grade:
+    description: >-
+      Token Efficiency letter grade (A-F) from the report. Empty when the run
+      failed before producing a report. To read outputs after a failing run,
+      set continue-on-error: true on this action's step.
+    value: ${{ steps.run.outputs.grade }}
+  total-dollars:
+    description: >-
+      Total dollar spend computed for the analyzed trace. Empty when the run
+      failed before producing a report. To read outputs after a failing run,
+      set continue-on-error: true on this action's step.
+    value: ${{ steps.run.outputs.total-dollars }}
+  recoverable-dollars:
+    description: >-
+      Dollars recoverable via the report's findings. Empty when the run
+      failed before producing a report. To read outputs after a failing run,
+      set continue-on-error: true on this action's step.
+    value: ${{ steps.run.outputs.recoverable-dollars }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+    - name: Install wattage
+      shell: bash
+      # Installed from the exact commit this action itself is pinned to
+      # (github.action_path is the checkout of that ref; with action.yml at
+      # the repository root it IS the package root), not from PyPI's latest
+      # -- pinning `uses: .../wattage@v0.2.0` would otherwise not actually
+      # pin the analysis engine that runs your cost gate, only the workflow
+      # wiring around it.
+      run: uv tool install "${{ github.action_path }}" --quiet
+    - name: Run wattage ci
+      id: run
+      shell: bash
+      run: "${{ github.action_path }}/action/entrypoint.sh"
+      env:
+        INPUT_SOURCE: ${{ inputs.source }}
+        INPUT_BASELINE: ${{ inputs.baseline }}
+        INPUT_PRICING: ${{ inputs.pricing }}
+        INPUT_QUALITY: ${{ inputs.quality }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_PR_COMMENT: ${{ inputs.pr-comment }}
+        INPUT_SARIF_OUT: ${{ inputs.sarif-out }}
+        INPUT_JUNIT_OUT: ${{ inputs.junit-out }}
+        INPUT_BADGE_OUT: ${{ inputs.badge-out }}
+        GH_TOKEN: ${{ github.token }}

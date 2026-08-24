@@ -15,9 +15,10 @@ prompt fingerprint (see LLMCall.prompt_fingerprint), which isn't populated
 yet. Left as a documented future enhancement rather than faked here.
 
 Finding.wasted_dollars is the *recoverable* amount, not the full resent
-cost: caching a hit still bills at cache_read_mult of the input rate, so
-the achievable savings is resent_dollars * (1 - cache_read_mult), matching
-benchmarks/frontier.py's real-data before/after simulation. Severity stays
+cost: caching a hit still bills at the model's cached-input rate (a
+multiplier or an absolute per-token rate, depending on the registry entry),
+so the achievable savings is resent_tokens * (input rate - cached rate),
+matching benchmarks/frontier.py's real-data before/after simulation. Severity stays
 keyed on the gross resent_dollars share of task cost (doc §4.1) -- how much
 of the task's spend the churn touches at all, not how much of that is
 ultimately recoverable.
@@ -32,7 +33,7 @@ advice that doesn't work, which is worse than not flagging it.
 
 from __future__ import annotations
 
-from wattage.detectors.base import AnalysisContext, ordered_llm_calls
+from wattage.detectors.base import AnalysisContext, ordered_llm_calls, rate_card_for
 from wattage.models import Finding, LLMCall, QualityRisk, Session, Severity, Task
 from wattage.pricing.registry import PricingRegistry, UnknownModelError
 
@@ -54,7 +55,7 @@ def find_resent_segments(task: Task, registry: PricingRegistry) -> list[tuple[LL
             # curr is the request that would need to mark this prefix
             # cacheable, so curr's own model/provider is what governs
             # whether that provider's minimum cacheable size is met.
-            price = registry.get(curr.provider, curr.model)
+            price = rate_card_for(registry, curr)
         except UnknownModelError:
             segments.append((curr, prior_total))  # can't check the threshold; don't guess
             continue
@@ -83,20 +84,23 @@ class PrefixChurnDetector:
             span_ids: list[str] = []
             for call, tokens in segments:
                 try:
-                    price = ctx.pricing.registry.get(call.provider, call.model)
+                    price = rate_card_for(ctx.pricing.registry, call)
                 except UnknownModelError:
                     continue
                 resent_tokens += tokens
                 resent_dollars += tokens * price.input
                 # The fix (prompt caching) doesn't make a re-sent prefix free --
-                # a cache hit still bills at cache_read_mult of the input rate
-                # (10% for every vendored model today). Crediting the full
-                # resent_dollars as "wasted" overstates the achievable savings
-                # by that same margin; benchmarks/frontier.py's real-data
-                # before/after simulation already accounts for this the same
-                # way (`resent_dollars - cached_dollars`), so this matches it
-                # instead of quietly assuming caching is a 100% discount.
-                recoverable_dollars += tokens * price.input * (1 - price.cache_read_mult)
+                # a cache hit still bills at the model's cached-input rate
+                # (0.1x input for Anthropic/Mistral, but an absolute per-token
+                # rate on most OpenAI/Google/xAI entries, ranging 0.1x-0.5x of
+                # input). price.cache_read_rate() resolves whichever form the
+                # registry entry uses; computing this from cache_read_mult
+                # alone would silently zero the savings for absolute-rate
+                # models (mult defaults to 1.0 there). Crediting the full
+                # resent_dollars as "wasted" would overstate the achievable
+                # savings; benchmarks/frontier.py's real-data before/after
+                # simulation accounts for it the same way.
+                recoverable_dollars += tokens * max(price.input - price.cache_read_rate(), 0.0)
                 span_ids.append(call.span_id)
 
             if resent_tokens == 0:

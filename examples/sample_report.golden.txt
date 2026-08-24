@@ -6,11 +6,11 @@
 ┏━━━━━━━━━━━━━━━━┳━━━━━━━━┓
 ┃ Category       ┃ Tokens ┃
 ┡━━━━━━━━━━━━━━━━╇━━━━━━━━┩
-│ input          │  18450 │
+│ input          │ 18,450 │
 │ output         │    320 │
 │ cache_read     │      0 │
 │ cache_creation │      0 │
 │ reasoning      │      0 │
 └────────────────┴────────┘
 No findings — this trace looks efficient.
-pricing: 2026-07-18-verified
+pricing: 2026-08-23-verified

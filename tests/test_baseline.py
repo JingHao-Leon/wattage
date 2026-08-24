@@ -5,11 +5,13 @@ import pytest
 
 from wattage.baseline import (
     Baseline,
+    RunSnapshot,
     cost_delta_pct,
     diff_against_baseline,
     load_baseline,
     record_run,
     save_baseline,
+    snapshot_from_report,
 )
 from wattage.models import Finding, QualityRisk, Report, Score, Severity
 
@@ -168,3 +170,42 @@ def test_save_and_load_round_trip(tmp_path: Path) -> None:
     assert reloaded.last_passing is not None
     assert reloaded.last_passing.total_dollars == 1.0
     assert reloaded.last_passing.per_detector["prefix_churn"].wasted_dollars == 0.05
+
+
+def test_record_run_tolerates_a_naive_recorded_at_in_hand_edited_history() -> None:
+    """Regression: baseline.json is a plain committed file a user or another
+    tool can hand-edit, and a NAIVE recorded_at (no UTC offset at all) used
+    to raise TypeError deep inside the rolling-window pruning when compared
+    against the new run's aware cutoff -- crashing `wattage ci` on exactly
+    the hand-edited-file case the parser exists to tolerate. Naive
+    timestamps are treated as UTC instead."""
+    baseline = Baseline(
+        history=[
+            RunSnapshot(
+                recorded_at="2026-08-20T10:00:00",  # naive: no offset, no "Z"
+                efficiency=90,
+                grade="A",
+                total_dollars=0.5,
+            )
+        ]
+    )
+    when = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)  # window cutoff is aware
+
+    updated = record_run(baseline, _report(1.0, [], when), passed=True)
+
+    # The naive entry parsed as UTC, survived the 7-day window, and the new
+    # run was appended -- no TypeError anywhere.
+    assert len(updated.history) == 2
+    assert updated.history[0].total_dollars == 0.5
+
+
+def test_snapshot_from_report_stamps_pricing_version() -> None:
+    """A later run priced under a different snapshot must be detectable:
+    the CI gate skips the raw cost comparison when versions differ, so the
+    snapshot has to carry which pricing version produced its dollars."""
+    report = _report(1.0, [], datetime.now(timezone.utc))
+    report.pricing_version = "2026-08-23-verified"
+
+    snapshot = snapshot_from_report(report)
+
+    assert snapshot.pricing_version == "2026-08-23-verified"

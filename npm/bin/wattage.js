@@ -6,10 +6,17 @@
 // needs no separate install step) or pipx, whichever is available. No
 // bundled/reimplemented logic here; the Python package is the single
 // source of truth.
+//
+// The Python package is pinned to this npm package's own version, so
+// `wattage-cli@X.Y.Z` always runs engine X.Y.Z rather than whatever
+// happens to be newest on PyPI. Set WATTAGE_VERSION to override the pin.
 
 const { spawnSync } = require("child_process");
 
 const args = process.argv.slice(2);
+const version =
+  process.env.WATTAGE_VERSION || require("../package.json").version;
+const spec = `wattage==${version}`;
 
 function commandExists(command) {
   const probe = spawnSync(command, ["--version"], { stdio: "ignore" });
@@ -26,9 +33,9 @@ function run(command, commandArgs) {
 }
 
 if (commandExists("uvx")) {
-  run("uvx", ["wattage", ...args]);
+  run("uvx", ["--from", spec, "wattage", ...args]);
 } else if (commandExists("pipx")) {
-  run("pipx", ["run", "wattage", ...args]);
+  run("pipx", ["run", "--spec", spec, "wattage", ...args]);
 } else {
   console.error(
     "wattage-cli needs either `uvx` (https://docs.astral.sh/uv/) or " +

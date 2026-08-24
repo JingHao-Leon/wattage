@@ -82,6 +82,10 @@ class Cost(BaseModel):
     # True when the model had no registry entry: fields above are left at 0,
     # not a guessed price (doc §9.4 — unknown models warn, never fabricate).
     unpriced: bool = False
+    # The registry entry that actually priced this call, when it differs from
+    # the call's own model string (a date-suffixed or "-latest" id resolved to
+    # its base entry) — provenance for "which rate card produced this number".
+    priced_as: str = ""
 
 
 class LLMCall(BaseModel):
@@ -94,6 +98,11 @@ class LLMCall(BaseModel):
     reasoning_effort: str | None = None
     prompt_fingerprint: str | None = None
     messages: list[dict[str, Any]] | None = None
+    # Anthropic's raw API (and Claude Code session logs) break cache_creation
+    # down by TTL ({"5m": n, "1h": n}); the 1-hour writes bill at 2x instead
+    # of 1.25x. Populated only when the source actually carries the breakdown
+    # and it sums to usage.cache_creation — never inferred.
+    cache_write_ttl_breakdown: dict[str, int] | None = None
     start_ns: int = 0
     end_ns: int = 0
     cost: Cost = Field(default_factory=Cost)
@@ -159,6 +168,29 @@ class Session(BaseModel):
 class Trace(BaseModel):
     source: str
     sessions: list[Session] = Field(default_factory=list)
+    # Ingestion-coverage accounting (never silent): spans that carried
+    # gen_ai.usage.* token attributes but could not be classified as a call
+    # kind, plus duplicate span ids collapsed to their first occurrence, plus
+    # spans quarantined for malformed attributes. All surfaced on the Report
+    # so an undercount is loud, not invisible.
+    dropped_token_spans: int = 0
+    duplicate_spans: int = 0
+    skipped_spans: list[str] = Field(default_factory=list)
+
+
+class FindingBasis(str, Enum):
+    """How a finding's wasted_dollars figure was derived.
+
+    measured: computed from tokens the provider actually billed (e.g. a
+    resent prefix priced at the real rate card) — trustworthy enough to
+    gate CI on.
+    estimated: a heuristic projection (chars/4 token estimates, policy
+    ceilings, hypothetical downgrades) — reported, but excluded from the
+    efficiency grade so a guess can never fail a build.
+    """
+
+    measured = "measured"
+    estimated = "estimated"
 
 
 class Finding(BaseModel):
@@ -167,6 +199,7 @@ class Finding(BaseModel):
     severity: Severity
     wasted_tokens: int = 0
     wasted_dollars: float = 0.0
+    basis: FindingBasis = FindingBasis.measured
     quality_risk: QualityRisk = QualityRisk.none
     evidence: str
     fix: str
@@ -182,11 +215,20 @@ class Score(BaseModel):
     quality_factor: float
     quality_measured: bool
     recoverable_dollars: float
+    # Sum of estimated-basis findings (chars/4 projections, policy ceilings,
+    # hypothetical downgrades). Kept separate from recoverable_dollars so a
+    # heuristic guess is visible but never inflates the measured headline or
+    # the grade.
+    estimated_extra_dollars: float = 0.0
     monthly_projection: float | None = None
 
 
 class Report(BaseModel):
     trace_source: str
+    # Which adapter read the trace ("otlp", "claude-code") — lets renderers
+    # add source-specific context (e.g. Claude Code sessions are priced at
+    # standard API rates even for subscription users).
+    source_format: str = "otlp"
     total_dollars: float
     token_breakdown: dict[str, int] = Field(default_factory=dict)
     findings: list[Finding] = Field(default_factory=list)
@@ -202,3 +244,9 @@ class Report(BaseModel):
     # (sorted, deduplicated) — so a renderer can say *which* model has no
     # registry entry, not just that something was missed.
     unpriced_models: list[str] = Field(default_factory=list)
+    # Ingestion-coverage accounting mirrored from Trace (see Trace): any
+    # nonzero value here means total_dollars may be an undercount, and the
+    # renderers say so out loud.
+    dropped_token_spans: int = 0
+    duplicate_spans: int = 0
+    skipped_spans: list[str] = Field(default_factory=list)

@@ -81,12 +81,28 @@ class HashEmbedder(Embedder):
     """Feature-hashed character n-grams into a fixed-size signed vector,
     compared by cosine similarity. Deterministic, no dependencies, no
     network — texts sharing substrings land in overlapping buckets, a crude
-    but real (not fabricated) novelty signal."""
+    but real (not fabricated) novelty signal.
+
+    Vectors are memoized per instance: novelty computations compare each
+    iteration against every prior one (O(n²) pairs), and re-deriving the
+    same text's vector for every pair made long production loops painfully
+    slow for no accuracy gain.
+    """
+
+    def __init__(self) -> None:
+        self._vector_cache: dict[str, list[float]] = {}
+
+    def _vector(self, text: str) -> list[float]:
+        cached = self._vector_cache.get(text)
+        if cached is None:
+            cached = _hash_vector(text)
+            self._vector_cache[text] = cached
+        return cached
 
     def similarity(self, text_a: str, text_b: str) -> float:
         if not text_a or not text_b:
             return 0.5
-        cosine = _cosine(_hash_vector(text_a), _hash_vector(text_b))
+        cosine = _cosine(self._vector(text_a), self._vector(text_b))
         return max(0.0, min(1.0, (cosine + 1.0) / 2.0))
 
 
@@ -100,21 +116,44 @@ class SentenceTransformerEmbedder(Embedder):
         self._model_name = model_name
         self._model: Any | None = None
         self._fallback: Embedder | None = None
+        self._vector_cache: dict[str, Any] = {}
 
     def _ensure_loaded(self) -> None:
         if self._model is not None or self._fallback is not None:
             return
         try:
             from sentence_transformers import SentenceTransformer
+
+            # Model construction can fail for reasons well beyond a missing
+            # package: no network for the first-run download, a blocked HF
+            # cache dir, a corrupted cache. Every one of those must degrade
+            # to the hash embedder — a CI gate that hard-crashes on an
+            # offline runner is worse than a cruder similarity signal.
+            self._model = SentenceTransformer(self._model_name)
         except ImportError:
             warnings.warn(
-                "sentence-transformers isn't installed (pip install 'wattage[embeddings]'); "
-                "falling back to the built-in hash embedder for convergence signals.",
+                "sentence-transformers isn't installed (install 'wattage[embeddings]', or "
+                "with uvx: uvx --from 'wattage[embeddings]' wattage); falling back to the "
+                "built-in hash embedder for convergence signals.",
                 stacklevel=3,
             )
             self._fallback = HashEmbedder()
-            return
-        self._model = SentenceTransformer(self._model_name)
+        except Exception as exc:  # noqa: BLE001 — any load failure degrades, never crashes
+            warnings.warn(
+                f"sentence-transformers model {self._model_name!r} could not be loaded "
+                f"({exc.__class__.__name__}: {exc}); falling back to the built-in hash "
+                "embedder for convergence signals.",
+                stacklevel=3,
+            )
+            self._fallback = HashEmbedder()
+
+    def _vector(self, text: str) -> Any:
+        cached = self._vector_cache.get(text)
+        if cached is None:
+            assert self._model is not None
+            cached = self._model.encode([text], normalize_embeddings=True)[0]
+            self._vector_cache[text] = cached
+        return cached
 
     def similarity(self, text_a: str, text_b: str) -> float:
         self._ensure_loaded()
@@ -122,9 +161,7 @@ class SentenceTransformerEmbedder(Embedder):
             return self._fallback.similarity(text_a, text_b)
         if not text_a or not text_b:
             return 0.5
-        assert self._model is not None
-        embeddings = self._model.encode([text_a, text_b], normalize_embeddings=True)
-        cosine = float(embeddings[0] @ embeddings[1])
+        cosine = float(self._vector(text_a) @ self._vector(text_b))
         return max(0.0, min(1.0, (cosine + 1.0) / 2.0))
 
 

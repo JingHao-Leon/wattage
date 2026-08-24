@@ -4,13 +4,27 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wattage"
-version = "0.1.1"
+version = "0.2.0"
 description = "A token-spend profiler and cost-regression gate for AI agents."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [{ name = "Muhammad Faizan Raza" }]
-keywords = ["llm", "agents", "opentelemetry", "observability", "cost", "tokens"]
+keywords = [
+  "llm",
+  "agents",
+  "opentelemetry",
+  "observability",
+  "cost",
+  "tokens",
+  "ci",
+  "profiler",
+  "cost-regression",
+  "genai",
+  "prompt-caching",
+  "claude-code",
+  "github-actions",
+]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
@@ -65,6 +79,8 @@ nonconvergence = "wattage.detectors.convergence:NonConvergenceDetector"
 retrieval_thrash = "wattage.detectors.retrieval_thrash:RetrievalThrashDetector"
 model_mismatch = "wattage.detectors.model_mismatch:ModelMismatchDetector"
 reasoning_overspend = "wattage.detectors.reasoning_overspend:ReasoningOverspendDetector"
+retry_storm = "wattage.detectors.retry_storm:RetryStormDetector"
+tool_result_bloat = "wattage.detectors.tool_result_bloat:ToolResultBloatDetector"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/wattage"]

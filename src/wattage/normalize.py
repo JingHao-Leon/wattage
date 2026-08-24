@@ -63,13 +63,20 @@ def _canonical_hash(value: Any) -> str:
 
 
 # Providers whose real API response is confirmed to report raw
-# input_tokens *inclusive* of cache tokens -- currently just OpenAI
-# (prompt_tokens includes cached_tokens, confirmed against OpenAI's own
-# docs). Every other provider (anthropic, mistral, unknown) keeps the
-# existing disjoint/additive treatment, matching Anthropic's confirmed
-# real API shape and this project's existing pricing formula, which
-# already prices cache_read/cache_creation as separate additive amounts.
-_INCLUSIVE_CACHE_PROVIDERS = frozenset({"openai"})
+# input_tokens *inclusive* of cache tokens:
+# - openai: prompt_tokens includes cached_tokens (OpenAI's own docs).
+# - google: GenerateContentResponse.UsageMetadata documents that
+#   promptTokenCount "includes the number of tokens in the cached
+#   content", with cachedContentTokenCount a subset.
+# - xai: OpenAI-compatible usage — prompt_tokens_details.cached_tokens is
+#   a subset of prompt_tokens (xAI's prompt-caching docs show it).
+# Every other provider (anthropic, mistral, unknown) keeps the
+# disjoint/additive treatment, matching Anthropic's confirmed real API
+# shape and this project's pricing formula, which prices
+# cache_read/cache_creation as separate additive amounts. Getting this
+# set wrong double-bills cached tokens AND pushes tier selection over
+# thresholds — it must track every provider the pricing registry vendors.
+_INCLUSIVE_CACHE_PROVIDERS = frozenset({"openai", "google", "xai"})
 
 
 def _provider_and_model(a: dict[str, Any]) -> tuple[str, str]:
@@ -80,7 +87,11 @@ def _provider_and_model(a: dict[str, Any]) -> tuple[str, str]:
         # from any-agent's litellm-backed instrumentation, see
         # benchmarks/traces/): split it rather than reporting "unknown".
         provider, _, model = model.partition("/")
-    return str(provider) if provider is not None else "unknown", str(model or "unknown")
+    # Casefold the provider: instrumentation in the wild emits "OpenAI",
+    # "Anthropic", etc., and both the pricing lookup and the cache-token
+    # convention below key on the lowercase form.
+    provider_str = str(provider).strip().lower() if provider is not None else "unknown"
+    return provider_str or "unknown", str(model or "unknown")
 
 
 def normalize_llm_call(span: RawSpan) -> LLMCall:
@@ -112,7 +123,13 @@ def normalize_llm_call(span: RawSpan) -> LLMCall:
         a.get("gen_ai.usage.cache_creation.input_tokens"),
         "gen_ai.usage.cache_creation.input_tokens",
     )
-    if provider in _INCLUSIVE_CACHE_PROVIDERS:
+    # OpenInference's llm.token_count.prompt is spec-defined as the total
+    # with prompt_details.* as subsets — the adapter marks those spans so
+    # the inclusive split applies regardless of provider.
+    inclusive = provider in _INCLUSIVE_CACHE_PROVIDERS or bool(
+        a.get("wattage.cache_tokens_inclusive")
+    )
+    if inclusive:
         if cache_read + cache_creation > raw_input:
             raise AdapterError(
                 f"gen_ai.usage.cache_read.input_tokens + cache_creation.input_tokens "
@@ -123,6 +140,23 @@ def normalize_llm_call(span: RawSpan) -> LLMCall:
         visible_input = raw_input - cache_read - cache_creation
     else:
         visible_input = raw_input
+
+    # Anthropic-shaped sources can carry a per-TTL cache-write breakdown
+    # (Claude Code session logs report ephemeral_5m/1h separately; 1-hour
+    # writes bill at 2x instead of 1.25x). Only kept when it actually sums
+    # to the cache_creation total — never inferred.
+    ttl_breakdown: dict[str, int] | None = None
+    five_m = a.get("gen_ai.usage.cache_creation.ephemeral_5m_input_tokens")
+    one_h = a.get("gen_ai.usage.cache_creation.ephemeral_1h_input_tokens")
+    if five_m is not None or one_h is not None:
+        five_m_count = _as_token_count(
+            five_m, "gen_ai.usage.cache_creation.ephemeral_5m_input_tokens"
+        )
+        one_h_count = _as_token_count(
+            one_h, "gen_ai.usage.cache_creation.ephemeral_1h_input_tokens"
+        )
+        if five_m_count + one_h_count == cache_creation:
+            ttl_breakdown = {"5m": five_m_count, "1h": one_h_count}
 
     usage = TokenUsage(
         input=visible_input,
@@ -144,6 +178,7 @@ def normalize_llm_call(span: RawSpan) -> LLMCall:
             usage=usage,
             max_tokens=a.get("gen_ai.request.max_tokens"),
             reasoning_effort=a.get("gen_ai.request.reasoning_effort"),
+            cache_write_ttl_breakdown=ttl_breakdown,
             start_ns=span.start_ns,
             end_ns=span.end_ns,
         )
@@ -159,10 +194,20 @@ def normalize_tool_call(span: RawSpan) -> ToolCall:
     # originally-assumed "gen_ai.tool.call.arguments"/"gen_ai.tool.call.result"
     # names — neither pair is formally standardized yet, so both are accepted.
     raw_args = a.get("gen_ai.tool.call.arguments", a.get("gen_ai.tool.args"))
+    # The hash must fingerprint the arguments as they actually were: two
+    # calls with different list-valued args (batch fetches, search-term
+    # arrays) or different unparseable strings are NOT the same call, and
+    # collapsing them all to {} before hashing made redundant_tool_calls
+    # flag genuinely-distinct calls as duplicates. The structured `args`
+    # dict stays dict-only for downstream field access; the hash covers the
+    # raw shape.
+    hash_source: Any = raw_args
     if isinstance(raw_args, str):
         try:
             raw_args = json.loads(raw_args)
+            hash_source = raw_args
         except json.JSONDecodeError:
+            # Unparseable arg string: fingerprint the string itself.
             raw_args = None
     args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
     result_value = a.get("gen_ai.tool.call.result", a.get("gen_ai.output"))
@@ -171,7 +216,7 @@ def normalize_tool_call(span: RawSpan) -> ToolCall:
         parent_id=span.parent_span_id,
         name=name,
         args=args,
-        args_hash=_canonical_hash(args),
+        args_hash=_canonical_hash(hash_source if hash_source is not None else {}),
         result=_stringify(result_value),
         result_hash=_canonical_hash(result_value) if result_value is not None else None,
         start_ns=span.start_ns,

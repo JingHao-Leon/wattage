@@ -5,6 +5,194 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-23
+
+The "meet your data where it already is" release: Wattage now reads the
+session logs and trace dialects agents actually produce, prices them
+against a fully refreshed 52-model snapshot, and separates measured waste
+from heuristic estimates so a guess can never fail your build.
+
+### Added
+
+- **Claude Code session adapter.** `wattage report --claude-code` analyzes
+  your latest Claude Code session straight from `~/.claude/projects` — or
+  point any command at a session `.jsonl` file or a project directory. The
+  adapter aggregates the one-record-per-content-block JSONL format by
+  message id (so a multi-block response is billed once, not N times),
+  splits reasoning (`thinking_tokens`) out of output, matches `tool_use`
+  blocks to their `tool_result` records, groups sub-agent sidechains into
+  their own tasks, and skips `"<synthetic>"` no-cost records. Validated
+  against real sessions.
+- **Cache-write TTL pricing.** Claude Code sessions carry Anthropic's
+  5-minute/1-hour cache-write split; 1-hour writes now price at their real
+  2x rate instead of the 5-minute 1.25x (used only when the breakdown sums
+  to the reported total — never inferred). The OTel format can't express
+  this, so OTel traces keep the documented 5-minute-rate treatment.
+- **Semconv generation tolerance.** The OTLP adapter now reads every
+  GenAI-attribute generation ever shipped: pre-v1.37 `gen_ai.system`,
+  pre-v1.27 `gen_ai.usage.prompt_tokens`/`completion_tokens`,
+  OpenLLMetry/Traceloop variants, and OpenInference's `llm.*` namespace
+  (`llm.token_count.*` incl. cache/reasoning details, `llm.model_name`,
+  `openinference.span.kind`), plus the `text_completion` and
+  `generate_content` operation names. Previously these traces read as
+  provider "unknown" with zero tokens — silently unpriced.
+- **JSON Lines + snake_case OTLP.** The spec-standard OTLP file-exporter
+  format (one TracesData object per line — what the OTel Collector
+  actually writes) and snake_case protobuf-JSON keys now both parse.
+  Adapter selection is by file content, never extension.
+- **Two new detectors.** `retry_storm` (a run of same-model calls all
+  matching the run's first call's prompt size within 2%, with no tool
+  activity between attempts — a retry loop re-billing the full prompt
+  every attempt) and `tool_result_bloat` (oversized tool
+  results re-fed into every later call's context, the classic
+  coding-agent waste pattern). Ten detectors total.
+- **`wattage demo`.** A findings-rich sample trace ships inside the wheel,
+  so the first command a newcomer runs shows real findings instead of an
+  empty "No findings" report.
+- **Measured vs estimated findings.** Every finding declares its basis.
+  Measured findings (real billed tokens at the real rate card) drive the
+  grade, the recoverable headline, and the CI gate; estimated findings
+  (chars÷4 projections, policy ceilings, hypothetical downgrades) are
+  reported with a `~` and totaled separately — a heuristic can never fail
+  a build. Estimate-based detectors additionally cap their dollars at the
+  task's actual billed spend (previously a single huge tool result could
+  report waste hundreds of times larger than the trace's real cost and
+  zero the grade).
+- **Critical escalation + a real `any_critical` gate.** A non-convergent
+  loop that burned ≥50% of its own spend after its last productive
+  iteration (configurable `critical_ratio`) escalates to critical
+  severity — previously no detector ever emitted critical, so the
+  documented `fail_on: any_critical` gate could never fire.
+- **CI verdict UX.** `wattage ci` now ends in an unmissable ✓ PASS / ✗
+  FAIL banner with reasons, announces first-run baseline initialization,
+  shows what the run was compared against, and gains
+  `--no-update-baseline` for local dry runs that must not touch the
+  committed baseline, plus `--report-json-out` for downstream tooling.
+- **Pricing-version-aware baselines.** Baseline snapshots record the
+  pricing version that priced them; when a Wattage upgrade ships new
+  rates, the cost-delta gate is suspended (announced, never silent)
+  until a passing run re-records the baseline under the new snapshot,
+  instead of failing the build on a price change disguised as a
+  regression — review cost changes by hand during that window.
+- **Session stitching and coverage accounting.** Multi-trace conversations
+  regroup by `session.id`/`gen_ai.conversation.id`; duplicate span ids
+  (OTLP is at-least-once) collapse to their first occurrence instead of
+  double-billing; token-bearing spans with no recognizable call kind are
+  counted and reported instead of silently vanishing; individually
+  malformed spans are quarantined with a visible report instead of
+  aborting a whole multi-thousand-span run; and a trace with spans but
+  zero captured usage refuses to grade instead of printing a vacuous
+  A (100).
+- **Burn map v2.** The HTML report gains a hero stat strip (total cost,
+  tokens, cache hit rate, measured waste, estimated findings) and a token
+  breakdown bar; the flame graph lays out in real pixels with a
+  ResizeObserver (no more viewBox letterboxing); clicking a finding lights
+  up the exact frames whose spans burned the money; single-child
+  structural chains collapse into one row; the grade chip is
+  grade-colored; the theme persists; plus a viewport meta, an inline
+  favicon, a reset-view button, and a fixed stuck-tooltip bug.
+- **Marketplace-ready GitHub Action.** `action.yml` moved to the repo root
+  (`uses: faizannraza/wattage@v0.2.0`), keeping the self-pinning engine
+  install. The PR comment is now sticky (one comment per PR, updated in
+  place via a hidden marker — no more per-push spam), the report always
+  lands in the job step summary (works on forks with zero permissions),
+  and the action exposes `score`/`grade`/`total-dollars`/
+  `recoverable-dollars` outputs plus a `config` input. Event parsing uses
+  `jq` instead of python3.
+- **`--runs-per-month N`** on report/score/badge: a monthly recoverable
+  projection at your own stated run rate — never extrapolated from the
+  trace's duration. Also `wattage score --json`, `--json` + `--html`
+  working together, and a `junit_out` config fallback matching the other
+  CI outputs.
+
+### Changed
+
+- **Pricing snapshot fully refreshed and expanded: 9 models → 52, 3
+  providers → 5** (`2026-08-23-verified`; every number from the provider's
+  own pricing page, fetched that day). All three OpenAI 5.6-series prices
+  corrected (sol $4/$20, terra $2/$12, luna $0.20/$1.20 — luna had a 5x
+  cut), and the 5.6 series' new 1.25x cache-write premium applied. The
+  Sonnet 5 "intro pricing ends 2026-09-01" note removed — Anthropic made
+  $2/$10 the permanent price. Added: the Claude 5 family (fable-5,
+  mythos-5, opus-5) and opus-4-7/4-6/4-5 with their per-model minimum
+  cacheable prefixes; the full GPT-5.x/4.1/4o families with their real
+  (non-uniform: 0.1x–0.5x) absolute cached-input rates; six more Mistral
+  models; Google Gemini (context-tiered, dated promo windows for
+  3.7/3.6-flash); and xAI Grok (context-tiered, per-model cached rates).
+  DeepSeek is deliberately excluded — its time-of-day rates don't fit the
+  schema yet, and excluding beats mispricing.
+- **The pricing engine is now context-tier aware** (Gemini/Grok reprice
+  whole requests above 200k prompt tokens, selected per call),
+  **effective-date aware** (dated rate windows price by the call's own
+  timestamp), and **honest about unpublished ranges** (OpenAI's >272K
+  rates aren't on its pricing page, so those calls are left unpriced, not
+  billed at the wrong tier). Anthropic-style compact date suffixes
+  (`claude-sonnet-4-5-20250929`) and `-latest` tags resolve to their base
+  entries with the resolution recorded (`Cost.priced_as`); OpenAI's dashed
+  dated SKUs (`gpt-4o-2024-05-13`) deliberately do NOT resolve — they are
+  genuinely different price points, so they stay unpriced rather than
+  billed at the wrong snapshot's rate — and Bedrock/Vertex ids are never
+  silently priced at first-party rates.
+- **Pricing overrides merge field-level.** Overriding just `input` no
+  longer silently resets the vendored cache multipliers to 1.0 (a 10x
+  cache-read overcharge). Malformed override values (a quoted "3.0e-6"
+  string, a null provider body) fail as clean config errors (exit 2)
+  instead of TypeError tracebacks on the money path.
+- **The unpriced-model signal moved off raw Python warnings.** It travels
+  on the Report (as before) and renders as styled output; library
+  warnings that remain (the embedder fallback note) print as clean
+  one-line notes with uvx-correct install advice instead of raw
+  UserWarnings with site-packages paths.
+- Terminal report: thousands separators, grade and severity colors,
+  `~`-marked estimated findings with a measured/estimated summary line,
+  coverage warnings, a Claude Code API-rate note, and long paths shown as
+  basename-in-title + full path in body instead of truncating
+  mid-filename. Error messages for bad input name the file and say what
+  Wattage expects.
+- `redundant_tool_calls`: per-tool look-back windows (intervening calls of
+  other tools no longer evict a duplicate candidate); list-valued or
+  unparseable tool args are fingerprinted by their raw shape instead of
+  collapsing to `{}` (a confirmed false-positive source); and a repeat
+  whose results weren't captured is reported at low severity with $0
+  ("possibly legitimate — treat as a pointer") instead of being priced as
+  a confirmed duplicate.
+- `verbosity`'s fix text no longer leads with tight `max_tokens` caps
+  (truncation-retry risk); it now recommends concise/structured output or
+  provider effort controls first. `retrieval_thrash` uses the configured
+  embedder, and its high-severity branch is reachable (the first
+  retrieval iteration can never be low-yield, so the bar is now
+  "everything after it").
+- The convergence benchmark's framing in README/docs now states plainly
+  what n=10 self-authored adversarial fixtures do and don't show, and
+  which embedder tier produced the published numbers. `judge: sampled` is
+  a hard config error (the tier exists but is not wired) instead of a
+  silent no-op.
+- npm shim (`wattage-cli`) pins the Python engine to its own package
+  version (`uvx --from wattage==X`), with a `WATTAGE_VERSION` escape
+  hatch — the npm version number is no longer meaningless.
+
+### Fixed
+
+- A hand-edited baseline timestamp without a timezone crashed `wattage ci`
+  with a raw TypeError at exit 1 — indistinguishable from a real cost
+  regression. Naive timestamps now parse as UTC, with a TypeError backstop
+  routing to exit 2.
+- A malformed `--quality` file or missing `--pricing` override reported
+  exit 3 ("unparseable trace") instead of exit 2 (config error) — config
+  inputs now load before trace ingestion, so each failure names the right
+  artifact.
+- Duplicate span ids double-billed the same call's tokens and dollars.
+- `SentenceTransformerEmbedder` crashed the whole run when the model
+  existed but couldn't load (no network, blocked HF cache) — any load
+  failure now degrades to the hash embedder with a note, and embedding
+  vectors are memoized per instance (novelty computation is O(n²) pairs;
+  long production loops were re-encoding the same text thousands of
+  times).
+- The `spans`/`scopeSpans` value being a non-list no longer silently
+  yields an empty (vacuously passing) trace, and a span missing `spanId`
+  reports that name in its error.
+
+
 ## [0.1.1] — 2026-07-26
 
 ### Fixed

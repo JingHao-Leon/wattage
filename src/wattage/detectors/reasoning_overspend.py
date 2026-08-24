@@ -18,8 +18,8 @@ swapping models.
 
 from __future__ import annotations
 
-from wattage.detectors.base import AnalysisContext, ordered_llm_calls
-from wattage.models import Finding, QualityRisk, Session, Severity
+from wattage.detectors.base import AnalysisContext, ordered_llm_calls, rate_card_for
+from wattage.models import Finding, FindingBasis, QualityRisk, Session, Severity
 from wattage.pricing.registry import UnknownModelError
 
 
@@ -41,7 +41,7 @@ class ReasoningOverspendDetector:
                     continue  # a large final output suggests genuinely complex work
 
                 try:
-                    price = ctx.pricing.registry.get(call.provider, call.model)
+                    price = rate_card_for(ctx.pricing.registry, call)
                 except UnknownModelError:
                     continue
 
@@ -59,6 +59,7 @@ class ReasoningOverspendDetector:
                         severity=severity,
                         wasted_tokens=excess,
                         wasted_dollars=wasted_dollars,
+                        basis=FindingBasis.estimated,
                         quality_risk=QualityRisk.review,
                         evidence=(
                             f"{call.usage.reasoning} reasoning tokens on a step with only "

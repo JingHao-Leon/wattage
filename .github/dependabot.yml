@@ -12,6 +12,8 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 10
 
+  # directory "/" covers both the root action.yml (the composite action
+  # lives at the repository root) and the workflows in .github/workflows/.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

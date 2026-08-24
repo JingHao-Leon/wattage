@@ -1,3 +1,4 @@
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -49,8 +50,9 @@ def test_exact_known_resent_prefix_yields_exact_wasted_tokens() -> None:
     assert finding.id == "prefix_churn"
     assert finding.wasted_tokens == 12_300  # 12_000 input + 300 output from call_a
     # Recoverable, not the full resent cost: a cache hit still bills at
-    # cache_read_mult (0.10 for claude-sonnet-4-6) of the input rate.
-    assert finding.wasted_dollars == 12_300 * 3.0e-6 * (1 - 0.10)
+    # the cached-input rate (0.10x input for claude-sonnet-4-6), so the
+    # savings is tokens * (input rate - cached rate).
+    assert finding.wasted_dollars == pytest.approx(12_300 * (3.0e-6 - 3.0e-6 * 0.10))
     assert finding.span_ids == ["b"]
 
 

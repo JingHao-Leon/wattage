@@ -22,13 +22,21 @@ Rather than asking "have I seen this exact call before," Wattage measures **prog
 
 These combine into a per-iteration progress score, and a loop is classified as **productive**, **thrashing** (the same unproductive action repeated), **oscillating** (a detected cycle), or **stalled** (context keeps growing, evidence and state both stay flat — the exact-match blind spot). A loop that genuinely recovered — real, substantive, different content in its later iterations — is never flagged for how it got there; but that has to be earned by actual observable content, not merely by the loop ending. A chat-only final answer with no captured message text (the normal case — message content isn't captured by the real adapter) is never enough on its own to exempt a loop: a loop that thrashed the whole time and then simply gave up with an uninformative answer is still flagged, exactly as if it had never answered at all.
 
-## The evidence
+## The benchmark — and exactly what it shows
 
-Rather than assert this works, the project built a hand-reviewed, empirically-verified set of 10 labeled synthetic loops (`benchmarks/adversarial_fixtures.py`) — three productive, three thrashing, two oscillating, two stalled, each one specifically constructed and hand-checked so its label is defensible on inspection, not just whatever the code happened to output — and ran both Wattage's classifier and a real reference implementation of the SHA-256 exact-match baseline against it (`benchmarks/harness.py`).
+The project built a hand-reviewed set of 10 labeled synthetic loops (`benchmarks/adversarial_fixtures.py`) — three productive, three thrashing, two oscillating, two stalled — and ran both Wattage's classifier and a real reference implementation of the SHA-256 exact-match baseline against it (`benchmarks/harness.py`).
 
 **Wattage: F1 1.00. The SHA-256 baseline: F1 0.25** (recall 0.14 — it catches exactly one of the seven genuinely non-convergent cases: the one where the arguments happened to be byte-identical every time). The concrete example the baseline misses entirely: a loop where every single tool call is technically unique, yet Wattage correctly identifies it as stalled because the context kept growing while the results stayed boilerplate.
 
-Run it yourself:
+Read those numbers for what they are, because the details matter:
+
+- **The suite is small (n=10) and written by this project.** Fixture labels were verified against the classifier during development, so a perfect score on it is closer to a *regression suite passing* than an independent field study. It is presented here as evidence about *blind spots*, not as a general accuracy claim.
+- **The positive cases were deliberately constructed to defeat exact-match hashing** (incrementing attempt counters, rephrased retries, cycling strategies). That's the point — these are the real-world patterns a hash can structurally never catch — but it means the baseline's 0.14 recall is by construction, demonstrating the blind-spot class rather than measuring average-case performance.
+- **The published numbers come from the dependency-free hash-embedder tier** (the default install, and what CI runs). The optional `sentence-transformers` tier produces different similarity distributions; the classifier's thresholds were tuned on the hash tier.
+
+What would upgrade this from a blind-spot demonstration to a field benchmark — externally-labeled real agent loops, stronger baselines (fuzzy canonicalization, tool-name repetition counting), per-tier results — is exactly the kind of contribution the project would love help with.
+
+Run it yourself; the table reproduces exactly, no hidden setup:
 
 ```bash
 uv run python -m benchmarks.harness
@@ -38,6 +46,10 @@ uv run python -m benchmarks.harness
 
 The novelty computation needs *some* notion of text similarity. Rather than requiring a heavy ML dependency just to get a useful default, Wattage ships a dependency-free character n-gram hashing embedder that works out of the box, and upgrades automatically to `sentence-transformers` (materially better novelty detection) if you `pip install wattage[embeddings]` — the convergence engine works either way; only the quality of the "which loops are borderline" judgment changes.
 
+## Severity, and the critical escalation
+
+A non-convergent loop's finding carries the real billed dollars of every iteration after its last productive one — measured, not estimated, so it counts toward the grade and the CI gate. When that post-productive waste reaches half the loop's own total spend (`nonconvergence.critical_ratio`, default 0.5), the finding escalates to **critical** severity — which is what trips `fail_on: any_critical` and fails the build outright. A runaway loop that burned half its budget going nowhere is exactly the case a hard stop exists for.
+
 ## What's next
 
-An optional sampled LLM judge (off by default) can resolve genuinely ambiguous cases where the structural signals disagree — it's built and tested, but never invoked automatically, so the core engine never depends on a live API key. Runtime enforcement — the same signals running live to warn, then nudge, then hard-stop a thrashing agent in-flight — is the natural next step once this diagnostic layer has proven itself on real traces, which is exactly the sequencing this project followed.
+A sampled LLM judge for genuinely ambiguous cases exists in the codebase (`convergence/judge.py`, tested) but is **not wired into the analysis pipeline** — configuring `judge: sampled` is a hard config error rather than a silent no-op, and the docs won't pretend otherwise until it's actually invokable. Runtime enforcement — the same signals running live to warn, then nudge, then hard-stop a thrashing agent in-flight — is the natural next step once this diagnostic layer has proven itself on real traces, which is exactly the sequencing this project is following.

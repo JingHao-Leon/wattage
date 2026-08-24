@@ -16,7 +16,7 @@ The fuller version of this detector (per the original design) uses per-task-type
 
 ## Fix
 
-Set `max_tokens` close to the expected output size, or request structured/extractive output (JSON, a fixed schema) instead of free text.
+Prompt for concise or structured/extractive output (JSON, a fixed schema), or use the provider's effort/verbosity control for the step. A `max_tokens` cap also works, but set it generously — a cap tight enough to truncate mid-answer forces retries that cost more than the excess ever did.
 
 ## Quality risk: low
 

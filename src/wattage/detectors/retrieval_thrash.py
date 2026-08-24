@@ -28,8 +28,17 @@ the efficiency score unless a --quality map confirms the cut is safe.
 from __future__ import annotations
 
 from wattage.convergence.embed import build_embedder
-from wattage.detectors.base import AnalysisContext
-from wattage.models import Finding, Iteration, Loop, QualityRisk, Session, Severity, ToolCall
+from wattage.detectors.base import AnalysisContext, rate_card_for
+from wattage.models import (
+    Finding,
+    FindingBasis,
+    Iteration,
+    Loop,
+    QualityRisk,
+    Session,
+    Severity,
+    ToolCall,
+)
 from wattage.pricing.registry import ModelPrice, UnknownModelError
 
 _RETRIEVAL_NAME_HINTS = ("search", "retrieve", "query", "lookup", "find")
@@ -58,7 +67,7 @@ def _representative_price(loop: Loop, ctx: AnalysisContext) -> ModelPrice | None
     for iteration in loop.iterations:
         for call in iteration.llm_calls:
             try:
-                return ctx.pricing.registry.get(call.provider, call.model)
+                return rate_card_for(ctx.pricing.registry, call)
             except UnknownModelError:
                 continue
     return None
@@ -82,7 +91,9 @@ class RetrievalThrashDetector:
 
     def _analyze_loop(self, loop: Loop, ctx: AnalysisContext) -> Finding | None:
         cfg = ctx.config.detectors.retrieval_thrash
-        embedder = ctx.embedder or build_embedder("local")
+        # Respect the configured embed mode when the shared embedder wasn't
+        # provided, instead of hardcoding "local".
+        embedder = ctx.embedder or build_embedder(ctx.config.detectors.nonconvergence.embed)
 
         retrieval_iters = [it for it in loop.iterations if _is_retrieval_iteration(it)]
         floor = max(2, cfg.max_iterations_soft)
@@ -131,14 +142,28 @@ class RetrievalThrashDetector:
         if wasted_tokens == 0:
             return None
 
+        # The chars/4 waste figure is an estimate; it must never exceed what
+        # the loop actually billed.
+        loop_billed = sum(call.cost.total for it in loop.iterations for call in it.llm_calls)
+        # Unconditional: $0-billed loops (unpriced-range calls) get $0
+        # estimated waste.
+        wasted_dollars = min(wasted_dollars, max(loop_billed, 0.0))
+
+        # The first retrieval iteration can never be low-yield (novelty vs
+        # zero priors is a neutral 0.5), so "every iteration but the first
+        # was low-yield" is the strongest observable signal — that's the
+        # high-severity bar, not the structurally-unreachable "all of them".
         severity = (
-            Severity.high if len(low_yield_iterations) >= len(retrieval_iters) else Severity.medium
+            Severity.high
+            if len(low_yield_iterations) >= len(retrieval_iters) - 1
+            else Severity.medium
         )
         return Finding(
             id=self.id,
             severity=severity,
             wasted_tokens=wasted_tokens,
             wasted_dollars=wasted_dollars,
+            basis=FindingBasis.estimated,
             quality_risk=QualityRisk.review,
             evidence=(
                 f"{len(low_yield_iterations)} of {len(retrieval_iters)} retrieval iterations "

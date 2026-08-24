@@ -18,7 +18,7 @@ strings, etc.) — every span name, attribute, token count, and timestamp is
 carried over verbatim; nothing about the trace's substance was changed.
 
 Running `wattage report` against this trace was Phase 1's real-trace
-validation gate and surfaced three genuine gaps our synthetic fixtures
+validation gate and surfaced four genuine gaps our synthetic fixtures
 hadn't exercised, all fixed in the adapter/normalizer/registry rather than
 by altering the trace:
 
@@ -31,7 +31,7 @@ by altering the trace:
    `gen_ai.tool.call.result` — neither pair is formally standardized yet, so
    both are now accepted.
 4. Mistral wasn't in the vendored pricing registry at all — added with
-   current verified pricing (see `pricing/data/pricing.yaml`).
+   current verified pricing (see `src/wattage/pricing/data/pricing.yaml`).
 
 Note: the trace's own embedded `gen_ai.usage.input_cost`/`output_cost`
 attributes reflect whatever Mistral charged when it was recorded
@@ -47,7 +47,7 @@ differs from the trace's own cost fields. That's intentional, not a bug.
 produces exactly one finding: `prefix_churn`, correctly identifying that
 this agent re-sends its growing conversation context on every turn with no
 caching in effect (true of this trace — a plain 3-turn tool loop with no
-`cache_control` anywhere). The other three detectors correctly stay silent:
+`cache_control` anywhere). The other nine detectors correctly stay silent:
 no duplicate tool calls (the two tool calls are different tools), no
 verbose output (max 46 output tokens), no cache writes to under-redeem.
 Pinned as a regression test in `tests/test_real_trace_any_agent.py`.

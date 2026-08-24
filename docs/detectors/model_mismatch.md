@@ -2,7 +2,7 @@
 
 **Detects:** a premium model used for a step that's really just picking a tool — a step a cheaper model would very likely handle equally well.
 
-Public routing guidance suggests 60–70% of agent calls suit a smaller model; this detector looks for the clearest, most defensible slice of that: calls whose whole job was a short, structured tool-selection decision.
+This detector looks for the clearest, most defensible case: calls whose whole job was a short, structured tool-selection decision — the step class where a cheaper model most plausibly performs identically.
 
 ## How it works
 

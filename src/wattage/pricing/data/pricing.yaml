@@ -5,85 +5,425 @@
 # Every number below was pulled from the provider's own pricing page on the
 # date in `version` — re-verify before trusting this for a real invoice.
 #
-# Source: https://platform.claude.com/docs/en/about-claude/pricing (fetched 2026-07-18)
-#         https://platform.claude.com/docs/en/build-with-claude/prompt-caching (fetched 2026-07-18)
-#         https://developers.openai.com/api/docs/pricing (fetched 2026-07-18)
-#         https://mistral.ai/pricing/api (fetched 2026-07-18)
-#         https://docs.mistral.ai/api/ (fetched 2026-07-18, prompt_cache_key / caching)
+# Sources (all fetched 2026-08-23):
+#   https://platform.claude.com/docs/en/about-claude/pricing
+#   https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+#   https://developers.openai.com/api/docs/pricing
+#   https://developers.openai.com/api/docs/guides/prompt-caching
+#   https://mistral.ai/pricing/api
+#   https://docs.mistral.ai/api/          (prompt_cache_key / cached-token rate)
+#   https://ai.google.dev/gemini-api/docs/pricing
+#   https://docs.x.ai/docs/models
 #
-# Known simplification: providers report a single `cache_creation` token count
-# with no TTL breakdown in the gen_ai.* usage attributes, but Anthropic prices
-# 5-minute and 1-hour cache writes differently (1.25x vs 2x base input). This
-# registry stores one `cache_write_mult`, set to the 5-minute (default TTL)
-# rate; a 1-hour-TTL-heavy workload will be modestly underpriced here until a
-# richer usage signal is available upstream.
-version: "2026-07-18-verified"
+# Schema notes (see registry.py for the full contract):
+#   - Rates are $/token (so $2/MTok = 2.0e-6).
+#   - cache_read_per_token / cache_write_per_token: absolute cached-input
+#     rates, used where the provider publishes a dollar figure rather than a
+#     multiplier. They win over cache_read_mult/cache_write_mult.
+#   - cache_write_mult_1h: Anthropic's 1-hour-TTL cache writes bill at 2x
+#     base input (5-minute writes at 1.25x). The 1h rate is only applied
+#     when the trace itself carries a TTL breakdown (Claude Code session
+#     logs do); OTel gen_ai.* usage attributes have no TTL split, so those
+#     traces price all writes at the 5-minute rate — a documented, modest
+#     underestimate for 1h-heavy workloads.
+#   - tiers: providers that reprice the whole request once the prompt
+#     crosses a token threshold (Gemini >200k, Grok >=200k). A tier with
+#     `unpriced: true` marks a range whose rate is not published (OpenAI
+#     models showing "<272K" pricing only) — calls there are left unpriced,
+#     never guessed at the wrong tier.
+#   - rates: dated windows for prices with a published effective period
+#     (Gemini 3.7/3.6 Flash promo pricing through 2026-12-31).
+#
+# Deliberately NOT included:
+#   - DeepSeek: publishes time-of-day rates (peak/off-peak differ 2x, with
+#     cache hits at ~3% of input — not 10%). That shape doesn't fit this
+#     registry yet; excluding it beats silently mispricing half a day's
+#     traffic. Supply a --pricing override if your traces are DeepSeek and
+#     your traffic sits in one window.
+#   - Bedrock/Vertex model ids: partner pricing genuinely differs from
+#     first-party rates (Anthropic documents a regional premium), so
+#     "us.anthropic.*" ids are NOT silently priced at first-party rates.
+#   - Gemini context-cache STORAGE ($/MTok/hour) — a time-based charge that
+#     can't be attributed to a span. Gemini cached-read token rates below
+#     are real, but a cache-storage-heavy workload costs more than the
+#     per-token figures show. Documented, not guessed.
+version: "2026-08-23-verified"
 
 providers:
   anthropic:
-    # Introductory pricing in effect through 2026-08-31; becomes $3/$15 (same
-    # shape as claude-sonnet-4-6 below) from 2026-09-01. Re-verify after that date.
+    # Claude 5 family. Note: claude-sonnet-5's launch pricing ($2/$10) was
+    # made the permanent standard price (the previously scheduled 2026-09-01
+    # increase to $3/$15 was cancelled — pricing page note
+    # "claude-sonnet-5-introductory-pricing", checked 2026-08-23).
+    claude-fable-5:
+      input: 10.0e-6
+      output: 50.0e-6
+      cache_read_mult: 0.10
+      cache_write_mult: 1.25
+      cache_write_mult_1h: 2.0
+      min_cacheable_prefix_tokens: 512
+    claude-mythos-5:
+      input: 10.0e-6
+      output: 50.0e-6
+      cache_read_mult: 0.10
+      cache_write_mult: 1.25
+      cache_write_mult_1h: 2.0
+      min_cacheable_prefix_tokens: 512
+    claude-opus-5:
+      input: 5.0e-6
+      output: 25.0e-6
+      cache_read_mult: 0.10
+      cache_write_mult: 1.25
+      cache_write_mult_1h: 2.0
+      min_cacheable_prefix_tokens: 512
     claude-sonnet-5:
       input: 2.0e-6
       output: 10.0e-6
       cache_read_mult: 0.10
       cache_write_mult: 1.25
-      min_cacheable_prefix_tokens: 1024
-    claude-sonnet-4-6:
-      input: 3.0e-6
-      output: 15.0e-6
-      cache_read_mult: 0.10
-      cache_write_mult: 1.25
-      min_cacheable_prefix_tokens: 1024
-    claude-sonnet-4-5:
-      input: 3.0e-6
-      output: 15.0e-6
-      cache_read_mult: 0.10
-      cache_write_mult: 1.25
+      cache_write_mult_1h: 2.0
       min_cacheable_prefix_tokens: 1024
     claude-opus-4-8:
       input: 5.0e-6
       output: 25.0e-6
       cache_read_mult: 0.10
       cache_write_mult: 1.25
+      cache_write_mult_1h: 2.0
+      min_cacheable_prefix_tokens: 1024
+    claude-opus-4-7:
+      input: 5.0e-6
+      output: 25.0e-6
+      cache_read_mult: 0.10
+      cache_write_mult: 1.25
+      cache_write_mult_1h: 2.0
+      min_cacheable_prefix_tokens: 2048
+    claude-opus-4-6:
+      input: 5.0e-6
+      output: 25.0e-6
+      cache_read_mult: 0.10
+      cache_write_mult: 1.25
+      cache_write_mult_1h: 2.0
+      min_cacheable_prefix_tokens: 4096
+    claude-opus-4-5:
+      input: 5.0e-6
+      output: 25.0e-6
+      cache_read_mult: 0.10
+      cache_write_mult: 1.25
+      cache_write_mult_1h: 2.0
+      min_cacheable_prefix_tokens: 4096
+    claude-sonnet-4-6:
+      input: 3.0e-6
+      output: 15.0e-6
+      cache_read_mult: 0.10
+      cache_write_mult: 1.25
+      cache_write_mult_1h: 2.0
+      min_cacheable_prefix_tokens: 1024
+    claude-sonnet-4-5:
+      input: 3.0e-6
+      output: 15.0e-6
+      cache_read_mult: 0.10
+      cache_write_mult: 1.25
+      cache_write_mult_1h: 2.0
       min_cacheable_prefix_tokens: 1024
     claude-haiku-4-5:
       input: 1.0e-6
       output: 5.0e-6
       cache_read_mult: 0.10
       cache_write_mult: 1.25
+      cache_write_mult_1h: 2.0
       min_cacheable_prefix_tokens: 4096
 
   openai:
-    # OpenAI's automatic prompt caching charges no write premium (cache_write_mult
-    # left at 1.0 = base input rate); only reads are discounted.
+    # GPT-5.6+ series: cache WRITES bill at 1.25x the uncached input rate
+    # (new for 5.6 — the official prompt-caching guide documents it; earlier
+    # models have no write premium). Cached-input rates are the pricing
+    # page's own absolute figures. Minimum cacheable prefix: 1024 (strict
+    # for 5.6+); pre-5.6 models document only "1,024 to 2,048 depending on
+    # the model" with no per-model table, so those entries use 2048 — the
+    # conservative bound that never advises caching a prefix the model may
+    # not accept (a smaller true minimum only makes findings appear later,
+    # never wrongly).
     gpt-5.6-sol:
-      input: 5.0e-6
-      output: 30.0e-6
-      cache_read_mult: 0.10
-      cache_write_mult: 1.0
+      input: 4.0e-6
+      output: 20.0e-6
+      cache_read_per_token: 0.40e-6
+      cache_write_mult: 1.25
       min_cacheable_prefix_tokens: 1024
     gpt-5.6-terra:
-      input: 2.5e-6
-      output: 15.0e-6
-      cache_read_mult: 0.10
-      cache_write_mult: 1.0
+      input: 2.0e-6
+      output: 12.0e-6
+      cache_read_per_token: 0.20e-6
+      cache_write_mult: 1.25
       min_cacheable_prefix_tokens: 1024
     gpt-5.6-luna:
-      input: 1.0e-6
-      output: 6.0e-6
-      cache_read_mult: 0.10
-      cache_write_mult: 1.0
+      input: 0.20e-6
+      output: 1.20e-6
+      cache_read_per_token: 0.02e-6
+      cache_write_mult: 1.25
       min_cacheable_prefix_tokens: 1024
+    # Pre-5.6 models: pricing page shows rates qualified "<272K" for the
+    # large-context models — the >=272K rate isn't published, so that range
+    # is explicitly unpriced rather than billed at the wrong tier.
+    gpt-5.5:
+      input: 5.0e-6
+      output: 30.0e-6
+      cache_read_per_token: 0.50e-6
+      min_cacheable_prefix_tokens: 2048
+      tiers:
+        - above_input_tokens: 272000
+          unpriced: true
+    gpt-5.5-pro:
+      # "Cached unavailable" on the pricing page — no caching for this model.
+      input: 30.0e-6
+      output: 180.0e-6
+      tiers:
+        - above_input_tokens: 272000
+          unpriced: true
+    gpt-5.4:
+      input: 2.5e-6
+      output: 15.0e-6
+      cache_read_per_token: 0.25e-6
+      min_cacheable_prefix_tokens: 2048
+      tiers:
+        - above_input_tokens: 272000
+          unpriced: true
+    gpt-5.4-mini:
+      input: 0.75e-6
+      output: 4.5e-6
+      cache_read_per_token: 0.075e-6
+      min_cacheable_prefix_tokens: 2048
+    gpt-5.4-nano:
+      input: 0.20e-6
+      output: 1.25e-6
+      cache_read_per_token: 0.02e-6
+      min_cacheable_prefix_tokens: 2048
+    gpt-5.2:
+      input: 1.75e-6
+      output: 14.0e-6
+      cache_read_per_token: 0.175e-6
+      min_cacheable_prefix_tokens: 2048
+    gpt-5.1:
+      input: 1.25e-6
+      output: 10.0e-6
+      cache_read_per_token: 0.125e-6
+      min_cacheable_prefix_tokens: 2048
+    gpt-5:
+      input: 1.25e-6
+      output: 10.0e-6
+      cache_read_per_token: 0.125e-6
+      min_cacheable_prefix_tokens: 2048
+    gpt-5-mini:
+      input: 0.25e-6
+      output: 2.0e-6
+      cache_read_per_token: 0.025e-6
+      min_cacheable_prefix_tokens: 2048
+    gpt-5-nano:
+      input: 0.05e-6
+      output: 0.40e-6
+      cache_read_per_token: 0.005e-6
+      min_cacheable_prefix_tokens: 2048
+    # Note the non-uniform cached-input ratios on older models (gpt-4o's
+    # cached rate is 0.5x input, gpt-4.1's is 0.25x) — exactly why these are
+    # absolute rates, not a shared multiplier.
+    gpt-4.1:
+      input: 2.0e-6
+      output: 8.0e-6
+      cache_read_per_token: 0.50e-6
+      min_cacheable_prefix_tokens: 2048
+    gpt-4.1-mini:
+      input: 0.40e-6
+      output: 1.60e-6
+      cache_read_per_token: 0.10e-6
+      min_cacheable_prefix_tokens: 2048
+    gpt-4.1-nano:
+      input: 0.10e-6
+      output: 0.40e-6
+      cache_read_per_token: 0.025e-6
+      min_cacheable_prefix_tokens: 2048
+    gpt-4o:
+      input: 2.5e-6
+      output: 10.0e-6
+      cache_read_per_token: 1.25e-6
+      min_cacheable_prefix_tokens: 2048
+    gpt-4o-mini:
+      input: 0.15e-6
+      output: 0.60e-6
+      cache_read_per_token: 0.075e-6
+      min_cacheable_prefix_tokens: 2048
 
   mistral:
     # Mistral supports prompt caching via a `prompt_cache_key` request param;
     # cache reads bill at 10% of standard input price (docs.mistral.ai/api/).
-    # No separate write premium is documented, so cache_write_mult stays at
-    # the registry's 1.0 default rather than guessing one.
+    # No cache-write premium is documented, so cache_write_mult stays at the
+    # registry's 1.0 default rather than guessing one.
     # min_cacheable_prefix_tokens isn't documented either — left unset (0)
     # rather than assumed.
+    mistral-medium-latest:
+      input: 1.5e-6
+      output: 7.5e-6
+      cache_read_mult: 0.10
+    mistral-large-latest:
+      input: 0.5e-6
+      output: 1.5e-6
+      cache_read_mult: 0.10
     mistral-small-latest:
       input: 0.15e-6
       output: 0.6e-6
       cache_read_mult: 0.10
+    codestral-latest:
+      input: 0.3e-6
+      output: 0.9e-6
+      cache_read_mult: 0.10
+    ministral-3b-latest:
+      input: 0.1e-6
+      output: 0.1e-6
+      cache_read_mult: 0.10
+    ministral-8b-latest:
+      input: 0.15e-6
+      output: 0.15e-6
+      cache_read_mult: 0.10
+    ministral-14b-latest:
+      input: 0.2e-6
+      output: 0.2e-6
+      cache_read_mult: 0.10
+
+  google:
+    # Gemini API, paid tier, standard (not Batch). Prompt-length-tiered
+    # models reprice the whole request above 200k prompt tokens (the pricing
+    # page's "<=200k / >200k" split — tiers below use 200001 so exactly-200k
+    # prompts stay on the low tier). cache_read_per_token is the published
+    # "context caching" $/MTok token rate; the additional cache STORAGE
+    # charge ($/MTok/hour) is time-based and excluded (see header).
+    gemini-3.1-pro-preview:
+      input: 2.0e-6
+      output: 12.0e-6
+      cache_read_per_token: 0.20e-6
+      tiers:
+        - above_input_tokens: 200001
+          input: 4.0e-6
+          output: 18.0e-6
+          cache_read_per_token: 0.40e-6
+    # 3.7/3.6 Flash: promo pricing through 2026-12-31, then the published
+    # 2027-01-01 rates — dated windows, so a trace from either period prices
+    # at the rate actually in effect when it ran.
+    gemini-3.7-flash:
+      rates:
+        - until: "2026-12-31"
+          input: 0.75e-6
+          output: 3.75e-6
+          cache_read_per_token: 0.075e-6
+        - from: "2027-01-01"
+          input: 1.5e-6
+          output: 7.5e-6
+          cache_read_per_token: 0.15e-6
+    gemini-3.6-flash:
+      rates:
+        - until: "2026-12-31"
+          input: 0.75e-6
+          output: 3.75e-6
+          cache_read_per_token: 0.075e-6
+        - from: "2027-01-01"
+          input: 1.5e-6
+          output: 7.5e-6
+          cache_read_per_token: 0.15e-6
+    gemini-3.5-flash:
+      input: 1.5e-6
+      output: 9.0e-6
+      cache_read_per_token: 0.15e-6
+    gemini-3.5-flash-lite:
+      input: 0.30e-6
+      output: 2.5e-6
+      cache_read_per_token: 0.03e-6
+    # Text/image/video input rate; audio input bills higher ($1.00/MTok) and
+    # isn't distinguishable from gen_ai.usage.input_tokens — audio-heavy
+    # traces will underprice here.
+    gemini-3-flash-preview:
+      input: 0.50e-6
+      output: 3.0e-6
+      cache_read_per_token: 0.05e-6
+    gemini-2.5-pro:
+      input: 1.25e-6
+      output: 10.0e-6
+      cache_read_per_token: 0.125e-6
+      tiers:
+        - above_input_tokens: 200001
+          input: 2.5e-6
+          output: 15.0e-6
+          cache_read_per_token: 0.25e-6
+    gemini-2.5-flash:
+      input: 0.30e-6
+      output: 2.5e-6
+      cache_read_per_token: 0.03e-6
+    gemini-2.5-flash-lite:
+      input: 0.10e-6
+      output: 0.40e-6
+      cache_read_per_token: 0.01e-6
+
+  xai:
+    # Grok: requests whose prompt reaches 200k tokens bill at the higher
+    # rate for ALL tokens in the request (docs.x.ai/docs/models states this
+    # explicitly). Cached-input rates are absolute and vary per model
+    # (0.15x-0.25x — not 0.1x). No cache-write premium or minimum documented.
+    grok-4.6:
+      input: 2.0e-6
+      output: 6.0e-6
+      cache_read_per_token: 0.50e-6
+      tiers:
+        - above_input_tokens: 200000
+          input: 4.0e-6
+          output: 12.0e-6
+          cache_read_per_token: 1.0e-6
+    grok-4.5:
+      input: 2.0e-6
+      output: 6.0e-6
+      cache_read_per_token: 0.30e-6
+      tiers:
+        - above_input_tokens: 200000
+          input: 4.0e-6
+          output: 12.0e-6
+          cache_read_per_token: 0.60e-6
+    grok-4.3:
+      input: 1.25e-6
+      output: 2.5e-6
+      cache_read_per_token: 0.20e-6
+      tiers:
+        - above_input_tokens: 200000
+          input: 2.5e-6
+          output: 5.0e-6
+          cache_read_per_token: 0.40e-6
+    grok-4.20-0309-reasoning:
+      input: 1.25e-6
+      output: 2.5e-6
+      cache_read_per_token: 0.20e-6
+      tiers:
+        - above_input_tokens: 200000
+          input: 2.5e-6
+          output: 5.0e-6
+          cache_read_per_token: 0.40e-6
+    grok-4.20-0309-non-reasoning:
+      input: 1.25e-6
+      output: 2.5e-6
+      cache_read_per_token: 0.20e-6
+      tiers:
+        - above_input_tokens: 200000
+          input: 2.5e-6
+          output: 5.0e-6
+          cache_read_per_token: 0.40e-6
+    grok-4.20-multi-agent-0309:
+      input: 1.25e-6
+      output: 2.5e-6
+      cache_read_per_token: 0.20e-6
+      tiers:
+        - above_input_tokens: 200000
+          input: 2.5e-6
+          output: 5.0e-6
+          cache_read_per_token: 0.40e-6
+    grok-build-0.1:
+      input: 1.0e-6
+      output: 2.0e-6
+      cache_read_per_token: 0.20e-6
+      tiers:
+        - above_input_tokens: 200000
+          input: 2.0e-6
+          output: 4.0e-6
+          cache_read_per_token: 0.40e-6

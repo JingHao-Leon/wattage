@@ -17,6 +17,11 @@ class AdapterError(Exception):
 
 
 class Adapter(ABC):
+    # Short machine-readable name for the format this adapter reads;
+    # surfaced as Report.source_format so renderers can add source-specific
+    # context.
+    format_name: str = "unknown"
+
     @abstractmethod
     def read(self, source: str | IO[str]) -> Iterable[RawSpan]: ...
 

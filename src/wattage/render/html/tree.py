@@ -33,7 +33,7 @@ from wattage.models import Iteration, LLMCall, Loop, RetrievalCall, Session, Tas
 _CHARS_PER_TOKEN = 4
 
 
-def _segment(category: str, tokens: int, dollars: float) -> dict[str, Any]:
+def _segment(category: str, tokens: int, dollars: float, span_id: str) -> dict[str, Any]:
     return {
         "name": category,
         "kind": "segment",
@@ -41,6 +41,7 @@ def _segment(category: str, tokens: int, dollars: float) -> dict[str, Any]:
         "value": tokens,
         "tokens": tokens,
         "dollars": dollars,
+        "span_id": span_id,
         "children": [],
     }
 
@@ -51,11 +52,11 @@ def _llm_node(call: LLMCall, label: str) -> dict[str, Any]:
     children = [
         seg
         for seg in (
-            _segment("input", usage.input, cost.input),
-            _segment("cache_read", usage.cache_read, cost.cache_read),
-            _segment("cache_creation", usage.cache_creation, cost.cache_creation),
-            _segment("reasoning", usage.reasoning, cost.reasoning),
-            _segment("output", usage.output, cost.output),
+            _segment("input", usage.input, cost.input, call.span_id),
+            _segment("cache_read", usage.cache_read, cost.cache_read, call.span_id),
+            _segment("cache_creation", usage.cache_creation, cost.cache_creation, call.span_id),
+            _segment("reasoning", usage.reasoning, cost.reasoning, call.span_id),
+            _segment("output", usage.output, cost.output, call.span_id),
         )
         if seg["tokens"] > 0
     ]
@@ -66,13 +67,14 @@ def _llm_node(call: LLMCall, label: str) -> dict[str, Any]:
         "value": usage.total(),
         "tokens": usage.total(),
         "dollars": cost.total,
+        "span_id": call.span_id,
         "children": children,
     }
 
 
 def _tool_node(tc: ToolCall) -> dict[str, Any]:
     tokens = len(tc.result) // _CHARS_PER_TOKEN if tc.result else 0
-    children = [_segment("tool_io", tokens, 0.0)] if tokens > 0 else []
+    children = [_segment("tool_io", tokens, 0.0, tc.span_id)] if tokens > 0 else []
     return {
         "name": tc.name,
         "kind": "tool",
@@ -80,6 +82,7 @@ def _tool_node(tc: ToolCall) -> dict[str, Any]:
         "value": tokens,
         "tokens": tokens,
         "dollars": None,
+        "span_id": tc.span_id,
         "children": children,
     }
 
@@ -90,7 +93,7 @@ def _retrieval_node(rc: RetrievalCall) -> dict[str, Any]:
         for chunk in rc.chunks
         if isinstance(chunk, dict)
     )
-    children = [_segment("tool_io", tokens, 0.0)] if tokens > 0 else []
+    children = [_segment("tool_io", tokens, 0.0, rc.span_id)] if tokens > 0 else []
     return {
         "name": rc.query or "retrieval",
         "kind": "retrieval",
@@ -98,6 +101,7 @@ def _retrieval_node(rc: RetrievalCall) -> dict[str, Any]:
         "value": tokens,
         "tokens": tokens,
         "dollars": None,
+        "span_id": rc.span_id,
         "children": children,
     }
 
@@ -168,15 +172,37 @@ def _session_node(session: Session) -> dict[str, Any]:
     }
 
 
+_STRUCTURAL_KINDS = {"trace", "session", "task", "loop"}
+
+
+def _collapse_chains(node: dict[str, Any]) -> dict[str, Any]:
+    """Merge single-child structural chains (trace › session › task › loop)
+    into one row. A typical single-session trace used to render four
+    visually identical full-width gray bars before anything informative
+    appeared — pure vertical noise in the shareable artifact."""
+    while (
+        node["kind"] in _STRUCTURAL_KINDS
+        and len(node["children"]) == 1
+        and node["children"][0]["kind"] in _STRUCTURAL_KINDS
+    ):
+        child = node["children"][0]
+        child = {**child, "name": f"{node['name']} › {child['name']}"}
+        node = child
+    node["children"] = [_collapse_chains(c) for c in node["children"]]
+    return node
+
+
 def build_tree(trace: Trace) -> dict[str, Any]:
     children = [_session_node(s) for s in trace.sessions]
     tokens = sum(c["tokens"] for c in children)
-    return {
+    root = {
         "name": trace.source,
         "kind": "trace",
         "model": None,
         "value": tokens,
         "tokens": tokens,
         "dollars": sum(c["dollars"] for c in children if c["dollars"] is not None),
+        "span_id": None,
         "children": children,
     }
+    return _collapse_chains(root)

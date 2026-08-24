@@ -102,7 +102,7 @@ def agent_span(span_id, parent_id, trace_id, start_ns, duration_ns, agent_name):
 def embeddings_span(span_id, parent_id, trace_id, start_ns, duration_ns, query, chunk_texts):
     """A genuine SpanKind.embeddings span, with chunk content carried in a
     retrieval.chunks attribute (normalize.py's normalize_retrieval_call
-    reads this into RetrievalCall.chunks -- see finding1_isolated_test.py,
+    reads this into RetrievalCall.chunks -- see retrieval_chunks_repro.py,
     which used exactly this span shape to catch the real gap where that
     wasn't true yet)."""
     attrs = {

@@ -18,8 +18,8 @@ capability (see doc §12.4's LLM-judge, gated off by default).
 
 from __future__ import annotations
 
-from wattage.detectors.base import AnalysisContext, ordered_llm_calls
-from wattage.models import Finding, QualityRisk, Session, Severity
+from wattage.detectors.base import AnalysisContext, ordered_llm_calls, rate_card_for
+from wattage.models import Finding, FindingBasis, QualityRisk, Session, Severity
 from wattage.pricing.registry import UnknownModelError
 
 
@@ -39,7 +39,7 @@ class VerbosityDetector:
                     continue
 
                 try:
-                    price = ctx.pricing.registry.get(call.provider, call.model)
+                    price = rate_card_for(ctx.pricing.registry, call)
                 except UnknownModelError:
                     continue
 
@@ -54,14 +54,18 @@ class VerbosityDetector:
                         severity=severity,
                         wasted_tokens=excess,
                         wasted_dollars=wasted_dollars,
+                        basis=FindingBasis.estimated,
                         quality_risk=QualityRisk.low,
                         evidence=(
                             f"{call.usage.output} output tokens with no max_tokens cap set "
                             f"(configured expected ceiling: {cfg.expected_output_ceiling})"
                         ),
                         fix=(
-                            "Set max_tokens close to the expected output size, or request "
-                            "structured/extractive output instead of free text."
+                            "Prompt for concise or structured/extractive output, or use the "
+                            "provider's effort/verbosity control for this step. A max_tokens "
+                            "cap also works, but set it generously — a cap tight enough to "
+                            "truncate mid-answer forces retries that cost more than the "
+                            "excess."
                         ),
                         span_ids=[call.span_id],
                     )

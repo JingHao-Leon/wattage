@@ -37,6 +37,9 @@ nav:
       - Overview: detectors/index.md
       - prefix_churn: detectors/prefix_churn.md
       - cache_gap: detectors/cache_gap.md
+      - nonconvergence: convergence.md
+      - retry_storm: detectors/retry_storm.md
+      - tool_result_bloat: detectors/tool_result_bloat.md
       - verbosity: detectors/verbosity.md
       - redundant_tool_calls: detectors/redundant_tool_calls.md
       - retrieval_thrash: detectors/retrieval_thrash.md

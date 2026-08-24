@@ -105,6 +105,26 @@ def test_fuzzy_mode_collapses_near_identical_numeric_args() -> None:
 
 
 def test_duplicate_outside_the_window_is_not_flagged() -> None:
+    """The look-back window is now per tool NAME: only intervening calls of
+    the SAME tool advance its window, so a busy trace full of other tools'
+    calls can't evict a duplicate candidate."""
+    engine = PricingEngine(PricingRegistry.load())
+    fillers = [
+        _tool_call(f"f{i}", "search_docs", {"q": f"distinct-{i}"}, result="r") for i in range(6)
+    ]
+    findings = _run(
+        engine,
+        [_tool_call("a", "search_docs", {"q": "x"}, result="same")]
+        + fillers
+        + [_tool_call("b", "search_docs", {"q": "x"}, result="same")],
+    )
+    assert findings == []
+
+
+def test_other_tools_calls_do_not_evict_a_duplicate_candidate() -> None:
+    """Regression companion to the eviction test above: six intervening
+    calls of a DIFFERENT tool used to push the original out of a shared
+    window, hiding a genuine exact duplicate."""
     engine = PricingEngine(PricingRegistry.load())
     fillers = [_tool_call(f"f{i}", "other_tool", {"i": i}, result="r") for i in range(6)]
     findings = _run(
@@ -113,7 +133,7 @@ def test_duplicate_outside_the_window_is_not_flagged() -> None:
         + fillers
         + [_tool_call("b", "search_docs", {"q": "x"}, result="same")],
     )
-    assert findings == []
+    assert len(findings) == 1
 
 
 @given(

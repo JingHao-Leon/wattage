@@ -1,6 +1,6 @@
 import pytest
 
-from wattage.models import Finding, QualityRisk, Severity
+from wattage.models import Finding, FindingBasis, QualityRisk, Severity
 from wattage.scoring.quality import compute_quality_factor
 from wattage.scoring.score import compute_score, grade_for
 
@@ -100,3 +100,45 @@ def test_recoverable_dollars_is_zero_when_total_dollars_is_zero() -> None:
 def test_quality_factor_placeholder_is_honest_about_being_unmeasured() -> None:
     assert compute_quality_factor(None) == (1.0, False)
     assert compute_quality_factor({"tasks": {}}) == (1.0, False)
+
+
+def _basis_finding(dollars: float, basis: FindingBasis) -> Finding:
+    return Finding(
+        id="test",
+        severity=Severity.medium,
+        wasted_dollars=dollars,
+        basis=basis,
+        quality_risk=QualityRisk.none,
+        evidence="e",
+        fix="f",
+    )
+
+
+def test_estimated_basis_dollars_are_reported_separately_and_never_gate_the_grade() -> None:
+    """Estimated findings (chars/4 projections, policy ceilings) are
+    heuristic guesses: they must surface in estimated_extra_dollars but
+    never inflate the measured recoverable_dollars headline, the waste
+    ratio, or the grade -- a guess can never fail a CI build."""
+    findings = [_basis_finding(4.0, FindingBasis.estimated)]
+    score = compute_score(findings=findings, total_dollars=10.0)
+
+    assert score.estimated_extra_dollars == pytest.approx(4.0)
+    assert score.recoverable_dollars == 0.0
+    assert score.waste_ratio == 0.0
+    assert score.efficiency == 100
+
+
+def test_measured_basis_finding_still_drives_waste_ratio_alongside_estimated_ones() -> None:
+    """Adding an estimated finding must not dilute the measured math: the
+    waste ratio and recoverable_dollars come from the measured finding
+    exactly as before, with the estimated dollars kept on their own line."""
+    findings = [
+        _basis_finding(5.0, FindingBasis.measured),
+        _basis_finding(4.0, FindingBasis.estimated),
+    ]
+    score = compute_score(findings=findings, total_dollars=10.0)
+
+    assert score.waste_ratio == pytest.approx(0.5)  # 5/10, measured only
+    assert score.efficiency == 50
+    assert score.recoverable_dollars == pytest.approx(5.0)
+    assert score.estimated_extra_dollars == pytest.approx(4.0)

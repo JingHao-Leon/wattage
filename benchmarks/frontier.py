@@ -6,7 +6,7 @@ synthetic-fixture) traces are registered in REAL_TRACES below, and for each
 task with re-sent, uncached context (prefix_churn's signal — reusing its
 exact detection logic via find_resent_segments, not a re-derivation) computes
 what the run would have cost had prompt caching actually been applied: the
-same resent tokens billed at the model's real cache_read_mult instead of the
+same resent tokens billed at the model's real cached-input rate instead of the
 full input rate. That's a mechanical recomputation from real recorded token
 counts and the current vendored pricing formula, not a guess.
 
@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+from wattage.detectors.base import rate_card_for
 from wattage.detectors.prefix_churn import find_resent_segments
 from wattage.pricing.registry import PricingRegistry, UnknownModelError
 from wattage.report import build_trace_and_report
@@ -68,11 +69,11 @@ def _simulate_caching_fix(trace_path: Path) -> FrontierPoint | None:
         for task in session.tasks:
             for call, resent_tokens in find_resent_segments(task, registry):
                 try:
-                    price = registry.get(call.provider, call.model)
+                    price = rate_card_for(registry, call)
                 except UnknownModelError:
                     continue
                 resent_dollars += resent_tokens * price.input
-                cached_dollars += resent_tokens * price.input * price.cache_read_mult
+                cached_dollars += resent_tokens * price.cache_read_rate()
 
     if resent_dollars == 0:
         return None

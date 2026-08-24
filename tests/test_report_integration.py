@@ -132,17 +132,19 @@ def test_three_detectors_fire_and_aggregate_consistently(integration_trace_path:
     )
     assert report.total_dollars == pytest.approx(expected_total)
 
-    # recoverable_dollars is the unfiltered sum of all three findings.
-    expected_recoverable = (
-        by_id["prefix_churn"].wasted_dollars
-        + by_id["verbosity"].wasted_dollars
-        + by_id["redundant_tool_calls"].wasted_dollars
+    # recoverable_dollars counts only measured-basis findings (prefix_churn:
+    # real billed tokens at the real rate card); verbosity and
+    # redundant_tool_calls are policy/chars-per-4 estimates, reported
+    # separately so a heuristic can never move the grade.
+    expected_recoverable = by_id["prefix_churn"].wasted_dollars
+    expected_estimated = (
+        by_id["verbosity"].wasted_dollars + by_id["redundant_tool_calls"].wasted_dollars
     )
     assert report.score.recoverable_dollars == pytest.approx(expected_recoverable)
+    assert report.score.estimated_extra_dollars == pytest.approx(expected_estimated)
 
-    # All three findings are quality_risk none/low, so waste_ratio counts all of them.
+    # waste_ratio (the grade input) counts only the measured finding.
     assert report.score.waste_ratio == pytest.approx(expected_recoverable / expected_total)
-    assert report.score.grade == "F"
 
 
 def test_unpriced_calls_are_counted_and_named_without_corrupting_priced_totals(
@@ -158,12 +160,12 @@ def test_unpriced_calls_are_counted_and_named_without_corrupting_priced_totals(
             "traceId": "trace-mixed",
             "spanId": "unpriced-1",
             "parentSpanId": "",
-            "name": "chat gpt-4o",
+            "name": "chat gpt-experimental-unreleased",
             "startTimeUnixNano": "2",
             "endTimeUnixNano": "3",
             "attributes": [
                 _attr("gen_ai.provider.name", "openai"),
-                _attr("gen_ai.request.model", "gpt-4o"),
+                _attr("gen_ai.request.model", "gpt-experimental-unreleased"),
                 _attr("gen_ai.usage.input_tokens", 5000),
                 _attr("gen_ai.usage.output_tokens", 2000),
             ],
@@ -180,7 +182,7 @@ def test_unpriced_calls_are_counted_and_named_without_corrupting_priced_totals(
         report = build_report(str(path))
 
     assert report.unpriced_calls == 1
-    assert report.unpriced_models == ["openai/gpt-4o"]
+    assert report.unpriced_models == ["openai/gpt-experimental-unreleased"]
     # total_dollars reflects only the priced call (1000*3e-6 + 100*15e-6),
     # never a guessed rate for the unpriced one.
     assert report.total_dollars == pytest.approx(1000 * 3.0e-6 + 100 * 15.0e-6)

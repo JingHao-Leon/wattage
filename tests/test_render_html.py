@@ -159,17 +159,20 @@ def test_fully_priced_trace_has_no_unpriced_banner() -> None:
     trace, report = build_trace_and_report(str(REPO_ROOT / "examples" / "sample_trace.json"))
     html = render_html(trace, report)
     assert '<div class="unpriced-banner">' not in html
-    assert 'class="score-chip">' in html  # no stray trailing space in the class attribute
+    # An A-grade trace gets a grade-colored score chip, never the unpriced pill.
+    assert 'class="score-chip grade-good">' in html
 
 
 # Every href/src that could trigger a network fetch, plus @import and script
 # loading — deliberately excludes the mandatory (never-fetched) SVG/XML
-# namespace URIs like xmlns="http://www.w3.org/2000/svg".
+# namespace URIs like xmlns="http://www.w3.org/2000/svg". <link> is allowed
+# ONLY with a data: href (the inline favicon) — a data: URI is embedded
+# content, not a fetch; any other <link> is still forbidden.
 _EXTERNAL_FETCH_PATTERNS = [
     re.compile(r'\bsrc\s*=\s*"https?://'),
     re.compile(r'\bhref\s*=\s*"https?://'),
     re.compile(r"@import\s"),
-    re.compile(r"<link\b"),
+    re.compile(r'<link\b(?![^>]*\bhref="data:)'),
     re.compile(r"<script\b[^>]*\bsrc\s*="),
     re.compile(r"\bfetch\s*\("),
     re.compile(r"XMLHttpRequest"),

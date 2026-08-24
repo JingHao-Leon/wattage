@@ -1,6 +1,6 @@
 # CI Integration
 
-`wattage ci` turns a trace into a pass/fail gate, so a pull request that makes your agent measurably more expensive fails the build instead of quietly hitting the invoice a month later.
+`wattage ci` turns a trace into a pass/fail gate, so a pull request that makes your agent measurably more expensive fails the build instead of quietly hitting the invoice a month later. Every run ends in an unmissable verdict — a green `✓ PASS` or red `✗ FAIL` banner with the exact reasons — plus what it was compared against, and an explicit notice the first time a baseline is initialized.
 
 This needs **two** workflows, not one — a detail that's easy to miss and breaks the whole "tracking" story if skipped. `wattage ci` updates `.wattage/baseline.json` on disk, but a PR runs on an ephemeral, throwaway checkout: whatever it writes vanishes when the job ends. If nothing ever commits the updated file back to your default branch, every future PR compares against the same stale baseline forever, and the rolling window never actually accumulates. The fix is standard and small: gate PRs against the baseline as committed, and update that committed baseline in a separate job that only runs *after* a merge to your default branch.
 
@@ -12,6 +12,8 @@ name: Wattage
 on:
   pull_request:
     paths: ["agents/**", "prompts/**", "src/**"]
+permissions:
+  pull-requests: write   # lets the action post/update its sticky PR comment
 concurrency:
   group: wattage-${{ github.ref }}
   cancel-in-progress: true
@@ -23,7 +25,7 @@ jobs:
       - name: Generate trace fixture
         run: python scripts/run_agent_fixture.py > trace.json   # your own deterministic eval run
       - name: Wattage cost-regression gate
-        uses: faizannraza/wattage/action@v0.1.0
+        uses: faizannraza/wattage@v0.2.0
         with:
           source: trace.json
           baseline: .wattage/baseline.json
@@ -37,7 +39,9 @@ jobs:
         with: { sarif_file: wattage.sarif }
 ```
 
-Run this only on pull requests, with a `paths:` filter and `concurrency.cancel-in-progress` — running it on every commit floods the PR with noise and (if the optional LLM judge is ever enabled) burns real API budget for no benefit. `uses: faizannraza/wattage/action@v0.1.0` pins to a released, immutable tag rather than tracking a moving branch, so a future Wattage release can't silently change what your existing workflows run.
+Run this only on pull requests, with a `paths:` filter and `concurrency.cancel-in-progress`. `uses: faizannraza/wattage@v0.2.0` pins to a released, immutable tag — and because the action installs the analysis engine from its own pinned checkout (not "latest from PyPI"), the pin genuinely pins the engine, so a future Wattage release can't silently change what your existing workflows run.
+
+The PR comment is **sticky**: one comment per PR, updated in place on every push (found via a hidden marker), never a new comment per run. Without `permissions: pull-requests: write` the comment can't post — the action warns and the full report still lands in the job's **step summary**, which needs no permissions at all and works on fork PRs too.
 
 ## 2. The baseline updater
 
@@ -58,7 +62,7 @@ jobs:
       - name: Generate trace fixture
         run: python scripts/run_agent_fixture.py > trace.json
       - name: Update Wattage baseline
-        uses: faizannraza/wattage/action@v0.1.0
+        uses: faizannraza/wattage@v0.2.0
         with:
           source: trace.json
           baseline: .wattage/baseline.json
@@ -75,19 +79,25 @@ jobs:
 
 This only runs on pushes to your default branch (i.e. after a PR merges), so it always records the real, merged state — never an in-progress PR's numbers — and it's what keeps the badge in your README current too. `[skip ci]` in the commit message stops this from re-triggering your own build pipelines in a loop; adjust the marker to whatever your CI provider honors.
 
+## Action outputs
+
+Beyond `exit-code`, the action exposes `score`, `grade`, `total-dollars`, and `recoverable-dollars` as step outputs for downstream steps (badges, annotations, routing). Reading outputs after a *failing* run requires `continue-on-error: true` on the action step, since the action exits non-zero on a regression.
+
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | 0 | Pass — within thresholds vs baseline |
 | 1 | Fail — a `fail-on` threshold breached |
-| 2 | Config/usage error |
-| 3 | Ingestion error — the trace was unparseable, or produced zero sessions |
+| 2 | Config/usage error (bad config file, malformed `--pricing`/`--quality` file, corrupt baseline) |
+| 3 | Ingestion error — the trace was unparseable, produced zero sessions, or carried no valid usage data |
 | 4 | Pricing error — at least one call had no pricing entry; an incomplete cost figure can't honestly gate anything, so this fails loudly instead of silently comparing an undercount |
 
 ## The baseline
 
 `.wattage/baseline.json` is a small, committed file: the last **passing** run's metrics, plus a rolling window (7 days by default) of every run for trend purposes. The noise-floor protection here is structural rather than statistical — `last_passing` only ever updates on a run that actually passed the gate, so one flaky bad run can never corrupt what future runs are compared against.
+
+Each snapshot also records the **pricing version** that priced it. When a Wattage upgrade ships new rates, a raw dollar delta would mix a price change with a real usage change — so after a snapshot change the cost-delta gate is suspended (announced in the output, never silent) until a passing run re-records the baseline under the new snapshot. Review cost changes by hand during that window: the first run to pass under the new snapshot becomes the new reference without a delta check.
 
 It only stays meaningful if something commits it after each merge — that's what workflow 2 above does. Start the repo off with an initial baseline (`wattage ci trace.json` locally, once, against a known-good trace, then commit the `.wattage/baseline.json` it writes) so the very first PR has something real to compare against.
 
@@ -95,9 +105,9 @@ It only stays meaningful if something commits it after each merge — that's wha
 
 Three independent thresholds, any of which can fail the build:
 
-- `score_below:N` — the Token Efficiency score must be at least N.
+- `score_below:N` — the Token Efficiency score must be at least N. Only **measured** findings move the score — an estimated (heuristic) finding can never fail your build.
 - `cost_delta_pct_above:N` — total cost must not have increased more than N% versus the baseline's last passing run.
-- `any_critical:true` — any single critical-severity finding fails the build outright, regardless of the aggregate score.
+- `any_critical:true` — any single critical-severity finding fails the build outright, regardless of the aggregate score. The `nonconvergence` detector escalates to critical when a loop burned at least half its own spend after its last productive iteration — the runaway-loop case a hard stop exists for.
 
 ## Outputs
 
@@ -105,10 +115,15 @@ Three independent thresholds, any of which can fail the build:
 - `--sarif-out` — each finding as a SARIF result, so it shows up in GitHub's Security tab.
 - `--junit-out` — JUnit XML (one testcase per finding, plus an overall gate testcase), for GitLab CI, CircleCI, Jenkins, or anything else that renders JUnit natively.
 - `--badge-out` — a Token Efficiency SVG badge for this run, so your README's badge stays current on every merge. Commit the CI job's output back to the repo (e.g. to `.github/wattage-badge.svg`) and point your README's `<img>` at the raw file on your default branch.
+- `--report-json-out` — the full machine-readable JSON report, for downstream tooling.
+
+All of these (except `--report-json-out`) can also be set once in `wattage.yaml` under `ci:` instead of repeating flags.
 
 ## Local dry run
 
 ```bash
-wattage ci path/to/trace.json --baseline .wattage/baseline.json --fail-on "score_below:80"
+wattage ci path/to/trace.json --no-update-baseline --fail-on "score_below:80"
 echo $?  # 0, 1, 2, 3, or 4 — never silently swallowed
 ```
+
+`--no-update-baseline` matters locally: without it, a passing local run against any scratch trace becomes `last_passing` in your committed baseline file — polluting what every future PR compares against. The dry-run flag evaluates the gate and prints the verdict while leaving the file untouched (and says so).

@@ -83,9 +83,16 @@ def test_cost_regression_fails_independent_of_score(tmp_path: Path) -> None:
     first = run_ci(str(REAL_TRACE), baseline_path=str(baseline_path), fail_on=lenient)
     assert first.exit_code == EXIT_PASS  # establishes last_passing
 
+    # The override declares the SAME pricing version the baseline recorded:
+    # a version bump would (correctly) skip the delta gate as a rate change,
+    # but this test simulates a genuine usage-cost regression under one
+    # consistent snapshot.
+    from wattage.pricing.registry import PricingRegistry
+
+    vendored_version = PricingRegistry.load().version
     inflated_pricing = tmp_path / "inflated.yaml"
     inflated_pricing.write_text(
-        "version: 'inflated-test'\n"
+        f"version: '{vendored_version}'\n"
         "providers:\n"
         "  mistral:\n"
         "    mistral-small-latest:\n"
@@ -283,9 +290,13 @@ def test_malformed_pricing_override_yaml_returns_exit_code_2(tmp_path: Path) -> 
 
 
 def test_pricing_override_missing_required_field_returns_exit_code_2(tmp_path: Path) -> None:
+    # An override may legitimately be partial for a model the vendored
+    # snapshot already covers (it deep-merges) — but a NEW model entry that
+    # never gains its required rates is a config mistake, caught at load.
     incomplete_pricing = tmp_path / "incomplete.yaml"
     incomplete_pricing.write_text(
-        "version: 'test'\nproviders:\n  anthropic:\n    claude-sonnet-4-6:\n      output: 15.0e-6\n"
+        "version: 'test'\nproviders:\n  anthropic:\n"
+        "    claude-hypothetical-9:\n      output: 15.0e-6\n"
     )
     result = run_ci(
         str(SAMPLE_TRACE),

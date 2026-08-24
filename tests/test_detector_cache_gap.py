@@ -95,8 +95,9 @@ def test_no_caching_attempted_is_not_flagged_here() -> None:
 
 
 def test_zero_premium_provider_is_not_flagged_even_fully_unredeemed() -> None:
-    """openai/gpt-5.6-luna has cache_write_mult == 1.0 (no cache-write
-    premium, per pricing.yaml) -- a fully-unread cache write there costs
+    """openai/gpt-4o has cache_write_mult == 1.0 (pre-5.6 OpenAI models
+    charge no cache-write premium, per pricing.yaml; the 5.6 series now
+    bills writes at 1.25x) -- a fully-unread cache write there costs
     exactly what plain input tokens would have, so there is genuinely
     nothing to redeem. This must stay silent by design, not be treated as
     a missed detection."""
@@ -104,8 +105,8 @@ def test_zero_premium_provider_is_not_flagged_even_fully_unredeemed() -> None:
     call = LLMCall(
         span_id="a",
         provider="openai",
-        model="gpt-5.6-luna",
-        usage=TokenUsage(input=1000, output=100, cache_creation=5000, cache_read=0),
+        model="gpt-4o",
+        usage=TokenUsage(input=8000, output=100, cache_creation=5000, cache_read=0),
         start_ns=0,
     )
     call.cost = engine.price_call(call)

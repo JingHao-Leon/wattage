@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
 class _StrictModel(BaseModel):
@@ -70,10 +70,41 @@ class NonConvergenceConfig(_StrictModel):
     stall_growth_threshold: float = 0.5
     osc_window: int = 6
     max_period: int = 4
+    # A non-convergent loop escalates to critical severity (tripping the
+    # `fail_on: any_critical` gate) once its post-productive waste reaches
+    # this share of the loop's own billed dollars — a runaway loop that
+    # burned half its spend going nowhere is exactly what a hard gate is
+    # for. Both sides of the ratio are real billed dollars.
+    critical_ratio: float = 0.5
     weights: ConvergenceWeightsConfig = Field(default_factory=ConvergenceWeightsConfig)
     exempt_tools: list[str] = Field(default_factory=lambda: ["poll_status", "wait", "healthcheck"])
     embed: str = "local"
     judge: str = "off"
+
+    @field_validator("judge", mode="before")
+    @classmethod
+    def _coerce_yaml_off(cls, value: object) -> object:
+        # YAML 1.1 parses unquoted `off` as boolean False — and `judge: off`
+        # is exactly the spelling the docs (and this validator's own error
+        # message) tell users to write. Coerce it back to the string.
+        if value is False:
+            return "off"
+        return value
+
+    @field_validator("judge")
+    @classmethod
+    def _judge_must_be_off(cls, value: str) -> str:
+        # The sampled LLM-judge tier exists in convergence/judge.py but is
+        # not wired into the analysis pipeline yet. Accepting "sampled" and
+        # silently doing nothing would be exactly the "silently plausible
+        # wrong behavior" this config schema forbids — so any non-"off"
+        # value is a hard config error until the tier is actually wired.
+        if value != "off":
+            raise ValueError(
+                f"nonconvergence.judge {value!r} is not available: the sampled judge tier "
+                'is not wired into the pipeline yet — set it to "off" (the default)'
+            )
+        return value
 
 
 class RetrievalThrashConfig(_StrictModel):
@@ -105,6 +136,23 @@ class ReasoningOverspendConfig(_StrictModel):
     simple_output_ceiling: int = 150
 
 
+class RetryStormConfig(_StrictModel):
+    enabled: bool = True
+    # Consecutive same-model calls whose prompt-side token counts differ by
+    # no more than this fraction look like the same request re-sent.
+    shape_tolerance: float = 0.02
+    # At least this many near-identical back-to-back calls before flagging.
+    min_repeats: int = 3
+
+
+class ToolResultBloatConfig(_StrictModel):
+    enabled: bool = True
+    # Tool results longer than this many characters get flagged: oversized
+    # results are re-fed into every subsequent model call's context.
+    result_char_ceiling: int = 20000
+    high_severity_multiplier: float = 4.0
+
+
 class DetectorsConfig(_StrictModel):
     prefix_churn: PrefixChurnConfig = Field(default_factory=PrefixChurnConfig)
     cache_gap: CacheGapConfig = Field(default_factory=CacheGapConfig)
@@ -114,6 +162,8 @@ class DetectorsConfig(_StrictModel):
     retrieval_thrash: RetrievalThrashConfig = Field(default_factory=RetrievalThrashConfig)
     model_mismatch: ModelMismatchConfig = Field(default_factory=ModelMismatchConfig)
     reasoning_overspend: ReasoningOverspendConfig = Field(default_factory=ReasoningOverspendConfig)
+    retry_storm: RetryStormConfig = Field(default_factory=RetryStormConfig)
+    tool_result_bloat: ToolResultBloatConfig = Field(default_factory=ToolResultBloatConfig)
 
 
 class QualityConfig(_StrictModel):
@@ -131,11 +181,12 @@ class CIConfig(_StrictModel):
     rolling_window_days: int = 7
     fail_on: CIFailOnConfig = Field(default_factory=CIFailOnConfig)
     # Default output paths, so a CI job doesn't have to repeat
-    # --badge-out/--sarif-out/--pr-comment-out on every wattage ci
-    # invocation -- an explicit CLI flag always overrides these.
+    # --badge-out/--sarif-out/--pr-comment-out/--junit-out on every wattage
+    # ci invocation -- an explicit CLI flag always overrides these.
     badge_out: str | None = None
     sarif_out: str | None = None
     pr_comment_out: str | None = None
+    junit_out: str | None = None
 
 
 class WattageConfig(_StrictModel):

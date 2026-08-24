@@ -42,7 +42,7 @@ uv run wattage report benchmarks/scenarios/scenario2.json --html /tmp/scenario2.
 ```
 
 These scenarios (and a fourth, smaller isolated repro — see
-`finding1_isolated_test.py`) are what surfaced several real bugs fixed in
+`retrieval_chunks_repro.py`) are what surfaced several real bugs fixed in
 `CHANGELOG.md`'s 0.1.1 entry, including the convergence engine's
 `reached_success` gate and the `RetrievalCall.chunks` population gap —
 every fixed-and-verified claim in that changelog entry traces back to a

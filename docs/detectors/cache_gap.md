@@ -10,7 +10,7 @@ Cache writes cost a premium over plain input tokens (typically 1.25×–2× depe
 
 The exact premium is computed per model from the vendored pricing registry's `cache_write_mult`, so this scales correctly across providers rather than assuming a single fixed number.
 
-**This detector targets the premium specifically, not the raw cache-write token count.** A provider with no cache-write premium at all (`cache_write_mult == 1.0` in the pricing registry — OpenAI's model today, per its own pricing page) costs exactly the same whether those tokens are cached or sent as plain input, so there is genuinely nothing to redeem and nothing to flag: `cache_gap` will correctly stay silent even on a fully-unread cache write in that case. This is by design, not a missed detection — if you're on a provider like this and expected a finding here, that's why there isn't one.
+**This detector targets the premium specifically, not the raw cache-write token count.** A provider with no cache-write premium at all (`cache_write_mult == 1.0` in the pricing registry — true of pre-5.6 OpenAI models, Mistral, and Google; the GPT-5.6 series now bills writes at 1.25x, so those DO get findings) costs exactly the same whether those tokens are cached or sent as plain input, so there is genuinely nothing to redeem and nothing to flag: `cache_gap` will correctly stay silent even on a fully-unread cache write in that case. This is by design, not a missed detection — if you're on a provider like this and expected a finding here, that's why there isn't one.
 
 ## Known limitation
 

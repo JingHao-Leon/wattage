@@ -25,8 +25,8 @@ sense than most other detectors, worth noting when reading a report.
 from __future__ import annotations
 
 from wattage.config import ModelMismatchConfig
-from wattage.detectors.base import AnalysisContext
-from wattage.models import Finding, LLMCall, QualityRisk, Session, Severity
+from wattage.detectors.base import AnalysisContext, call_timestamp, rate_card_for
+from wattage.models import Finding, FindingBasis, LLMCall, QualityRisk, Session, Severity
 from wattage.pricing.registry import UnknownModelError
 from wattage.scoring.quality import downgrade_pass_rate
 
@@ -64,8 +64,10 @@ class ModelMismatchDetector:
             return None
 
         try:
-            price = ctx.pricing.registry.get(call.provider, call.model)
-            candidate_price = ctx.pricing.registry.get(call.provider, candidate_model)
+            price = rate_card_for(ctx.pricing.registry, call)
+            candidate_price = ctx.pricing.registry.get(
+                call.provider, candidate_model, at=call_timestamp(call)
+            )
         except UnknownModelError:
             return None
 
@@ -99,6 +101,7 @@ class ModelMismatchDetector:
             severity=severity,
             wasted_tokens=call.usage.input + call.usage.output,
             wasted_dollars=wasted_dollars,
+            basis=FindingBasis.estimated,
             quality_risk=QualityRisk.review,
             evidence=evidence,
             fix=f"Route this step to {candidate_model}.",

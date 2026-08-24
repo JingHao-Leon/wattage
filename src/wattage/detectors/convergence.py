@@ -126,10 +126,19 @@ class NonConvergenceDetector:
             call.span_id for it in wasted_iterations for call in it.tool_calls
         ]
 
+        # Critical escalation: a loop that burned at least `critical_ratio`
+        # of its own total cost after its last productive iteration is a
+        # runaway — the exact case `fail_on: any_critical` exists to stop.
+        # Both sides of the ratio are real billed dollars, not estimates.
+        severity = _SEVERITY_BY_CLASS[loop_class]
+        loop_dollars = sum(it.cost() for it in iterations)
+        if loop_dollars > 0 and wasted_dollars / loop_dollars >= cfg.critical_ratio:
+            severity = Severity.critical
+
         return Finding(
             id=self.id,
             subtype=loop_class.value,
-            severity=_SEVERITY_BY_CLASS[loop_class],
+            severity=severity,
             wasted_tokens=wasted_tokens,
             wasted_dollars=wasted_dollars,
             quality_risk=QualityRisk.none,

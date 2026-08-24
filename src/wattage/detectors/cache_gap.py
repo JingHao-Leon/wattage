@@ -21,7 +21,7 @@ wasted nothing beyond what plain input would have cost anyway.
 
 from __future__ import annotations
 
-from wattage.detectors.base import AnalysisContext, ordered_llm_calls
+from wattage.detectors.base import AnalysisContext, ordered_llm_calls, rate_card_for
 from wattage.models import Finding, QualityRisk, Session, Severity
 from wattage.pricing.registry import UnknownModelError
 
@@ -54,10 +54,10 @@ class CacheGapDetector:
                 if call.usage.cache_creation <= 0:
                     continue
                 try:
-                    price = ctx.pricing.registry.get(call.provider, call.model)
+                    price = rate_card_for(ctx.pricing.registry, call)
                 except UnknownModelError:
                     continue
-                premium_per_token = price.input * max(price.cache_write_mult - 1.0, 0.0)
+                premium_per_token = max(price.cache_write_rate() - price.input, 0.0)
                 if premium_per_token <= 0:
                     continue
                 wasted_dollars += (

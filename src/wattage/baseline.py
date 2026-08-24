@@ -13,7 +13,7 @@ the config doesn't ask for.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -25,9 +25,16 @@ def _parse_iso8601(value: str) -> datetime:
     """datetime.fromisoformat only accepts a trailing "Z" (the standard
     UTC designator) starting in Python 3.11; this project's floor is 3.10,
     and baseline.json is a plain committed file a user or another tool
-    could hand-edit with a "Z"-suffixed timestamp.
+    could hand-edit with a "Z"-suffixed timestamp. A hand-edited NAIVE
+    timestamp (no offset at all) is treated as UTC — comparing it against
+    an aware one would otherwise raise TypeError deep inside the window
+    pruning, crashing `wattage ci` on exactly the hand-edited-file case
+    this parser exists to tolerate.
     """
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 class DetectorSnapshot(BaseModel):
@@ -40,6 +47,12 @@ class RunSnapshot(BaseModel):
     efficiency: int
     grade: str
     total_dollars: float
+    # Which pricing snapshot priced this run. When a later run's version
+    # differs, a raw dollar delta mixes a rate change with a real usage
+    # change — the CI gate skips (and annotates) the cost comparison rather
+    # than failing on a price bump. Empty string on baselines recorded by
+    # older wattage versions.
+    pricing_version: str = ""
     per_detector: dict[str, DetectorSnapshot] = Field(default_factory=dict)
 
 
@@ -77,6 +90,7 @@ def snapshot_from_report(report: Report) -> RunSnapshot:
         efficiency=report.score.efficiency,
         grade=report.score.grade,
         total_dollars=report.total_dollars,
+        pricing_version=report.pricing_version,
         per_detector=per_detector,
     )
 

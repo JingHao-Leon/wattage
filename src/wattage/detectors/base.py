@@ -7,12 +7,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from importlib.metadata import entry_points
 from typing import Any
 
 from wattage.config import WattageConfig
 from wattage.models import Finding, LLMCall, Session, Task, ToolCall
 from wattage.pricing.engine import PricingEngine
+from wattage.pricing.registry import ModelPrice, PricingRegistry
 
 
 @dataclass
@@ -31,6 +33,23 @@ class Detector(ABC):
     @abstractmethod
     def analyze(self, session: Session, ctx: AnalysisContext) -> list[Finding]:
         """Pure function of a session (+ ctx). Deterministic, side-effect free."""
+
+
+def call_timestamp(call: LLMCall) -> datetime | None:
+    """The call's own wall-clock time, for dated rate windows."""
+    ns = call.end_ns or call.start_ns
+    if ns <= 0:
+        return None
+    return datetime.fromtimestamp(ns / 1e9, tz=timezone.utc)
+
+
+def rate_card_for(registry: PricingRegistry, call: LLMCall) -> ModelPrice:
+    """Registry lookup pinned to the call's own timestamp, so detectors
+    price waste at the rate window the call was actually billed under — not
+    whatever window happens to cover the day the analysis runs (a trace
+    from a promo-pricing period must not have its waste priced at the
+    post-promo rate). Raises UnknownModelError like registry.get."""
+    return registry.get(call.provider, call.model, at=call_timestamp(call))
 
 
 def ordered_llm_calls(task: Task) -> list[LLMCall]:

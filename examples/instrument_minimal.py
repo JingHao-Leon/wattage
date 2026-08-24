@@ -12,7 +12,7 @@ Collector, OpenLLMetry, ...), you don't need this at all -- just point
 `wattage report` at whatever OTLP JSON export they already produce.
 
 Run:
-    pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-common
+    pip install wattage opentelemetry-sdk opentelemetry-exporter-otlp-proto-common
     python instrument_minimal.py
     wattage report trace.json
 """
